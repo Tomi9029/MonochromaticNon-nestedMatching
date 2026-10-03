@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <NautyNative Include="native/linux-x64/liborderednauty.so" Condition="Exists('native/linux-x64/liborderednauty.so')" />
+    <NautyNative Include="native/win-x64/orderednauty.dll" Condition="Exists('native/win-x64/orderednauty.dll')" />
+  </ItemGroup>
+
+  <Target Name="CopyNautyNative" AfterTargets="Build" Condition="@(NautyNative) != ''">
+    <Copy SourceFiles="@(NautyNative)" DestinationFolder="$(OutputPath)" />
+  </Target>
+
+  <Target Name="CopyNativeNauty" AfterTargets="Build" Condition="Exists('native\win-x64\orderednauty.dll')">
+    <Copy SourceFiles="native\win-x64\orderednauty.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

@@ -1,0 +1,164 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true, Position=0)]
+    [string]$NautyDir,
+
+    [string]$Gcc = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Split-Path -Parent $ScriptDir
+$NautyDir = (Resolve-Path -LiteralPath $NautyDir).Path
+$OutDir = Join-Path $ScriptDir "win-x64"
+$Out = Join-Path $OutDir "orderednauty.dll"
+$Log = Join-Path $OutDir "build.log"
+$Bridge = Join-Path $ScriptDir "ordered_nauty_bridge.c"
+$ObjDir = Join-Path $OutDir "obj"
+
+$Sources = @(
+    "nauty.c",
+    "nautil.c",
+    "nausparse.c",
+    "naugraph.c",
+    "schreier.c",
+    "naurng.c"
+)
+
+Write-Host "=== OrderedMatching / nauty Windows build v10 ==="
+Write-Host "Project : $ProjectRoot"
+Write-Host "Nauty   : $NautyDir"
+Write-Host "Bridge  : $Bridge"
+Write-Host "Output  : $Out"
+Write-Host ""
+
+if (-not (Test-Path -LiteralPath (Join-Path $NautyDir "nauty.h"))) {
+    throw "Missing nauty.h here: $NautyDir"
+}
+if (-not (Test-Path -LiteralPath $Bridge)) {
+    throw "Missing bridge source: $Bridge"
+}
+foreach ($src in $Sources) {
+    $path = Join-Path $NautyDir $src
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Missing nauty source: $path"
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+New-Item -ItemType Directory -Force -Path $ObjDir | Out-Null
+Remove-Item -LiteralPath $Log -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $Out -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $ObjDir "*.o") -Force -ErrorAction SilentlyContinue
+
+if ([string]::IsNullOrWhiteSpace($Gcc)) {
+    $preferred = @(
+        "C:\\codeshit\\ucrt64\\bin\\gcc.exe",
+        "C:\\msys64\\ucrt64\\bin\\gcc.exe",
+        "C:\\msys64\\mingw64\\bin\\gcc.exe"
+    )
+    $picked = $preferred | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($picked) { $Gcc = $picked } else { $Gcc = "gcc" }
+}
+
+$gccCommand = Get-Command $Gcc -ErrorAction SilentlyContinue
+if ($null -eq $gccCommand) {
+    throw "gcc not found. Pass the full path with -Gcc."
+}
+$gccPath = $gccCommand.Source
+$gccVersion = (& $gccPath --version 2>&1 | Out-String).Trim()
+$target = (& $gccPath -dumpmachine 2>&1 | Out-String).Trim()
+Write-Host "GCC     : $gccPath"
+Write-Host "Version : $gccVersion"
+Write-Host "Target  : $target"
+if ($target -notmatch 'x86_64-w64-mingw32') {
+    throw "Expected x86_64-w64-mingw32 GCC, got '$target'."
+}
+
+@(
+    "GCC: $gccPath"
+    "Version: $gccVersion"
+    "Target: $target"
+    "NautyDir: $NautyDir"
+    "Bridge: $Bridge"
+) | Set-Content -LiteralPath $Log -Encoding ASCII
+
+function Invoke-GccStep {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string[]]$GccArgs,
+        [string]$WorkingDirectory = $ProjectRoot
+    )
+
+    $stepLog = Join-Path $OutDir ("$Name.log")
+    Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
+    Write-Host ""
+    Write-Host "--- $Name ---"
+    Write-Host "$gccPath $($GccArgs -join ' ')"
+
+    Push-Location $WorkingDirectory
+    try {
+        # Use PowerShell's call operator with an argument array. This avoids
+        # the Windows PowerShell 5.1 ProcessStartInfo quoting problem that
+        # previously caused gcc to receive no arguments.
+        $output = (& $gccPath @GccArgs 2>&1 | Out-String)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+
+    [System.IO.File]::WriteAllText($stepLog, $output, [System.Text.Encoding]::UTF8)
+    if ($output.Trim().Length -gt 0) { Write-Host $output }
+
+    Add-Content -LiteralPath $Log -Value "`n===== $Name =====`n$gccPath $($GccArgs -join ' ')`n$output" -Encoding UTF8
+
+    if ($exitCode -ne 0) {
+        throw "GCC step '$Name' failed with exit code $exitCode. See $stepLog"
+    }
+}
+
+# Compile using relative source names while the working directory is the
+# nauty tree. This also avoids Unicode path edge cases in older GCC/MinGW.
+foreach ($src in $Sources) {
+    $objPath = Join-Path $ObjDir ([System.IO.Path]::GetFileNameWithoutExtension($src) + ".o")
+    Invoke-GccStep -Name ("compile-" + [System.IO.Path]::GetFileNameWithoutExtension($src)) -WorkingDirectory $NautyDir -GccArgs @(
+        "-O2",
+        "-fno-strict-aliasing",
+        "-I.",
+        "-c",
+        $src,
+        "-o",
+        $objPath
+    )
+}
+
+$bridgeObj = Join-Path $ObjDir "ordered_nauty_bridge.o"
+Invoke-GccStep -Name "compile-bridge" -WorkingDirectory $ProjectRoot -GccArgs @(
+    "-O2",
+    "-fno-strict-aliasing",
+    "-I$NautyDir",
+    "-c",
+    $Bridge,
+    "-o",
+    $bridgeObj
+)
+
+$objects = @($bridgeObj) + ($Sources | ForEach-Object {
+    Join-Path $ObjDir ([System.IO.Path]::GetFileNameWithoutExtension($_) + ".o")
+})
+
+$linkArgs = @("-shared") + $objects + @(
+    "-static-libgcc",
+    "-static-libstdc++",
+    "-o",
+    $Out
+)
+Invoke-GccStep -Name "link" -WorkingDirectory $ProjectRoot -GccArgs $linkArgs
+
+if (-not (Test-Path -LiteralPath $Out)) { throw "DLL was not created: $Out" }
+$size = (Get-Item -LiteralPath $Out).Length
+Write-Host ""
+Write-Host "Done: $Out ($size bytes)" -ForegroundColor Green
+Write-Host "Build log: $Log"
