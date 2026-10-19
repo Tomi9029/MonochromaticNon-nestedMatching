@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 <nauty-dir>"
+  echo "Example: $0 /c/Users/Tamas/Downloads/nauty2_9_3"
+  exit 2
+fi
+
+# IMPORTANT:
+# The user's Windows username may contain non-ASCII characters (e.g. Tamás).
+# GCC/ld/assembler can choke on such absolute output paths under some MSYS2 setups.
+# We therefore pass ONLY relative paths to GCC. The shell itself may still cd into
+# the Unicode path; GCC arguments and output filenames remain ASCII/relative.
+
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NAUTY_DIR="$(cd "$1" && pwd)"
@@ -38,7 +50,7 @@ if [[ "$OBJ_FROM_NAUTY" = /* || "$NAUTY_FROM_PROJECT" = /* ]]; then
   exit 7
 fi
 
-echo "=== OrderedMatching / nauty Windows UCRT64 build v18 ==="
+echo "=== OrderedMatching / nauty Windows UCRT64 build v13 ==="
 echo "Project : $PROJECT_ROOT"
 echo "Nauty   : $NAUTY_DIR"
 echo "GCC     : $(command -v gcc)"

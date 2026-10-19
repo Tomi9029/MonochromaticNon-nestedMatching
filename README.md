@@ -22,6 +22,13 @@ Az összes jelenlegi kulcseset:
 dotnet run -- --verify-all
 ```
 
+Ez `n=2..5` eseteket futtatja a két solverrel, és összehasonlítja az eredményeket.
+
+nauty-val együtt egy SAT esetben:
+
+```powershell
+dotnet run -- --verify -n 2 --nauty
+```
 
 ## Self-test
 
