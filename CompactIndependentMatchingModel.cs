@@ -130,8 +130,8 @@ internal sealed class CompactIndependentMatchingModel
 
     public ulong[] BuildPackedKeys()
     {
-        if (MatchingSize > 7)
-            throw new NotSupportedException();
+        if (MatchingSize > 7 || EdgeCount > 512)
+            throw new NotSupportedException("Packed keyhez legfeljebb 7 élű matching és legfeljebb 512 él támogatott.");
         var keys = new ulong[MatchingCount];
         var temp = new int[MatchingSize];
         for (var m = 0; m < MatchingCount; m++)
@@ -142,7 +142,7 @@ internal sealed class CompactIndependentMatchingModel
 
             ulong key = 0;
             for (var j = 0; j < MatchingSize; j++)
-                key |= ((ulong)temp[j]) << (8 * j);
+                key |= ((ulong)temp[j]) << (9 * j);
             keys[m] = key;
         }
         return keys;

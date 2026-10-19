@@ -94,6 +94,14 @@ internal sealed class CompactCnfSolver
     public bool FixVariable(int edgeId, bool red)
         => Enqueue(edgeId, red ? (byte)2 : (byte)1);
 
+    public bool[] GetAssignment()
+    {
+        var result = new bool[_assignment.Length];
+        for (var i = 0; i < result.Length; i++)
+            result[i] = _assignment[i] == 2; // true = red, false = blue
+        return result;
+    }
+
     public bool Solve()
     {
         if (!Propagate()) return false;

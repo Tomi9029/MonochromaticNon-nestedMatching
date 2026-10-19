@@ -4,15 +4,36 @@ namespace OrderedMatching;
 
 internal static class VerificationEdition
 {
-    public static int RunOne(int n, bool useNauty)
+    public static int RunOne(int n, bool useNauty, int? vertexCount = null, bool force = false)
     {
         if (n < 1 || n > 5)
         {
-            Console.Error.WriteLine("A --verify jelenleg 1 <= n <= 5 tartományra van korlátozva.");
+            Console.Error.WriteLine("A listás --verify jelenleg 1 <= n <= 5 tartományra van korlátozva; n>=6 esetén a tömör Research mód használható.");
             return 2;
         }
 
-        var m = 3 * n - 1;
+        var m = vertexCount ?? checked(3 * n - 1);
+        if (m < 0 || m > 28)
+        {
+            Console.Error.WriteLine("A --verify mód 0 <= m <= 28 tartományt támogat.");
+            return 2;
+        }
+        var estimatedMatchings = MatchingCountMath.CountNonNested(m, n);
+        if (estimatedMatchings > 300_000 && !force)
+        {
+            Console.Error.WriteLine($"A becsült matching-szám {estimatedMatchings:N0}; ez túl nagy a listás Verification módhoz.");
+            Console.Error.WriteLine("Használd a --force kapcsolót, vagy válassz kisebb m-et.");
+            return 2;
+        }
+        if (2 * n > m)
+        {
+            Console.WriteLine("=== Verification Edition ===");
+            Console.WriteLine($"n={n}, m={m}");
+            Console.WriteLine("SAT: m < 2n, tehát n élű matching nem létezhet.");
+            Console.WriteLine("VERIFICATION: PASS (triviális eset)");
+            return 0;
+        }
+
         Console.WriteLine("=== Verification Edition ===");
         Console.WriteLine($"n={n}, m={m}");
         Console.WriteLine("A: eredeti CNF + watcholt DPLL");

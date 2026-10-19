@@ -29,12 +29,16 @@ internal static class SelfTest
         Check("All-red coloring has a legal witness", TestAllRedHasWitness);
         Check("Independent matching generator counts", TestIndependentMatchingCounts);
         Check("Compact n=6 matching count", TestCompactN6Count);
+        Check("Matching count formula for custom m", TestMatchingCountFormula);
+        Check("Matching case inspector indexes", TestMatchingCaseIndexes);
         Check("Independent lower-bound coloring n=2, m=4", TestIndependentLowerBoundN2);
         Check("Independent lower-bound coloring n=3, m=7", TestIndependentLowerBoundN3);
+        Check("Compact lower-bound coloring n=6, m=16", TestCompactLowerBoundN6M16);
         if (runSat)
         {
             Check("Independent solver agrees: n=2, m=5", () => TestIndependentSolver(2, 5));
             Check("Independent solver agrees: n=3, m=8", () => TestIndependentSolver(3, 8));
+            Check("Compact independent solver SAT: n=6, m=16", TestCompactIndependentSolverN6M16);
         }
 
         if (runSat)
@@ -159,6 +163,27 @@ internal static class SelfTest
         ColoringVerifier.AssertWitnessIsLegal(instance, witness);
     }
 
+
+    private static void TestCompactLowerBoundN6M16()
+    {
+        var primary = CompactMatchingModel.Build(16, 6);
+        var independent = CompactIndependentMatchingModel.Build(16, 6);
+        Expect(primary.MatchingCount, 240240);
+        Expect(independent.MatchingCount, 240240);
+        var coloring = CompactColoringVerifier.ClassicalLowerBoundColoring(16, 6);
+        Expect(CompactColoringVerifier.IsAvoiding(primary, coloring), true);
+        Expect(CompactColoringVerifier.IsAvoiding(independent, coloring), true);
+    }
+
+    private static void TestCompactIndependentSolverN6M16()
+    {
+        var model = CompactIndependentMatchingModel.Build(16, 6);
+        var solver = new CompactIndependentSolver(model);
+        var result = solver.Solve(fixFirstRed: true);
+        Expect(result.IsSat, true);
+        Expect(CompactColoringVerifier.IsAvoiding(model, result.Assignment), true);
+    }
+
     private static void TestKnownLowerBoundN2()
     {
         var instance = CnfInstance.Build(4, 2, true);
@@ -261,6 +286,38 @@ internal static class SelfTest
     {
         var model = CompactMatchingModel.Build(17, 6);
         Expect(model.MatchingCount, 816816);
+    }
+
+    private static void TestMatchingCountFormula()
+    {
+        Expect(MatchingCountMath.CountNonNested(17, 6), new System.Numerics.BigInteger(816816));
+        Expect(MatchingCountMath.CountNonNested(16, 6), new System.Numerics.BigInteger(240240));
+        Expect(MatchingCountMath.CountNonNested(7, 3), new System.Numerics.BigInteger(35));
+        Expect(MatchingCountMath.CountNonNested(5, 3), System.Numerics.BigInteger.Zero);
+    }
+
+    private static void TestMatchingCaseIndexes()
+    {
+        var model = CompactMatchingModel.Build(8, 3);
+        for (var caseIndex = 0; caseIndex < model.MatchingCount; caseIndex++)
+        {
+            var actual = MatchingCaseInspector.FindMatchingAtIndex(8, 3, caseIndex, forbidNested: true);
+            if (actual is null)
+                throw new InvalidOperationException($"A case inspector nem talált matchinget a {caseIndex + 1}. indexen.");
+
+            var actualIds = actual.Select(e => model.GetEdgeId(e.U, e.V)).OrderBy(x => x).ToArray();
+            var expectedIds = model.Matching(caseIndex).ToArray().OrderBy(x => x).ToArray();
+            if (!actualIds.SequenceEqual(expectedIds))
+                throw new InvalidOperationException($"A case index sorrend eltér a generátortól a {caseIndex + 1}. indexen.");
+
+            for (var i = 0; i < actual.Length; i++)
+            for (var j = i + 1; j < actual.Length; j++)
+            {
+                Expect(NestedRelations.IsNested(actual[i], actual[j]), false);
+                if (actual[i].U == actual[j].U || actual[i].U == actual[j].V || actual[i].V == actual[j].U || actual[i].V == actual[j].V)
+                    throw new InvalidOperationException("A case inspector matchingje két közös csúcsú élt tartalmaz.");
+            }
+        }
     }
 
     private static void Expect<T>(T actual, T expected)

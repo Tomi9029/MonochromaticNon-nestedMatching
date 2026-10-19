@@ -2,11 +2,20 @@ using System.Diagnostics;
 
 namespace OrderedMatching;
 
-internal sealed record CompactIndependentResult(bool IsSat, long DecisionNodes, long Propagations, TimeSpan Elapsed);
+internal sealed record CompactIndependentResult(
+    bool IsSat,
+    bool[] Assignment,
+    long DecisionNodes,
+    long Propagations,
+    TimeSpan Elapsed);
 
 /// <summary>
 /// Külön implementáció: nem CNF-et kezel, hanem minden matching állapotát tartja fenn.
 /// CSR incidence-listákat használ a memóriahatékonyság miatt.
+///
+/// Fontos invariáns: az Enqueue azonnal frissíti a számlálókat minden olyan matchingnél,
+/// amely tartalmazza az élt. Így konfliktus esetén sem marad félig frissített állapot,
+/// és a Backtrack minden trail-változást szabályosan vissza tud vonni.
 /// </summary>
 internal sealed class CompactIndependentSolver
 {
@@ -59,11 +68,21 @@ internal sealed class CompactIndependentSolver
     {
         var sw = Stopwatch.StartNew();
         if (fixFirstRed && _model.EdgeCount > 0 && !Enqueue(0, 2))
-            return new CompactIndependentResult(false, DecisionNodes, Propagations, sw.Elapsed);
+        {
+            sw.Stop();
+            return new CompactIndependentResult(false, GetAssignment(), DecisionNodes, Propagations, sw.Elapsed);
+        }
 
         var sat = Search();
         sw.Stop();
-        return new CompactIndependentResult(sat, DecisionNodes, Propagations, sw.Elapsed);
+        return new CompactIndependentResult(sat, GetAssignment(), DecisionNodes, Propagations, sw.Elapsed);
+    }
+
+    public bool[] GetAssignment()
+    {
+        var result = new bool[_assignment.Length];
+        for (var i = 0; i < result.Length; i++) result[i] = _assignment[i] == 2;
+        return result;
     }
 
     private bool Search()
@@ -99,18 +118,17 @@ internal sealed class CompactIndependentSolver
 
     private bool Propagate()
     {
+        var k = _model.MatchingSize;
         while (_queueHead < _trailCount)
         {
             Propagations++;
             var edge = _trail[_queueHead++];
-            var red = _assignment[edge] == 2;
+
+            // The matching counters have already been fully updated by Enqueue().
+            // Here we only detect conflicts and derive unit implications.
             for (var p = _offset[edge]; p < _offset[edge + 1]; p++)
             {
                 var m = _incidence[p];
-                _unassignedCount[m]--;
-                if (red) _redCount[m]++;
-
-                var k = _model.MatchingSize;
                 var blueCount = k - _redCount[m] - _unassignedCount[m];
                 if (_redCount[m] == k || blueCount == k)
                     return false;
@@ -121,11 +139,11 @@ internal sealed class CompactIndependentSolver
                     if (remaining < 0) return false;
                     if (_redCount[m] == k - 1)
                     {
-                        if (!Enqueue(remaining, 1)) return false;
+                        if (!Enqueue(remaining, 1)) return false; // force blue
                     }
                     else if (blueCount == k - 1)
                     {
-                        if (!Enqueue(remaining, 2)) return false;
+                        if (!Enqueue(remaining, 2)) return false; // force red
                     }
                 }
             }
@@ -144,8 +162,20 @@ internal sealed class CompactIndependentSolver
     {
         if (_assignment[edge] != 0)
             return _assignment[edge] == value;
+
         _assignment[edge] = value;
         _trail[_trailCount++] = edge;
+
+        // Update every incident matching atomically with respect to the trail.
+        // Never update these counters lazily in Propagate: a conflict may return
+        // halfway through the incidence list, leaving Backtrack unable to undo it.
+        var red = value == 2;
+        for (var p = _offset[edge]; p < _offset[edge + 1]; p++)
+        {
+            var m = _incidence[p];
+            _unassignedCount[m]--;
+            if (red) _redCount[m]++;
+        }
         return true;
     }
 
