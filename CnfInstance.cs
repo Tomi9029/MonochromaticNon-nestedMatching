@@ -59,6 +59,54 @@ internal sealed class CnfInstance
         return string.Join(Environment.NewLine, lines);
     }
 
+
+    /// <summary>
+    /// Builds the same two-color CNF from arbitrary fixed-size edge sets.
+    /// Each supplied set is forbidden from being monochromatic. This is used
+    /// for non-nested paths as well as matchings.
+    /// </summary>
+    public static CnfInstance BuildFromForbiddenEdgeSets(
+        int vertexCount,
+        int setSize,
+        IEnumerable<int[]> forbiddenSets)
+    {
+        if (vertexCount < 0 || setSize < 1)
+            throw new ArgumentOutOfRangeException();
+
+        var edges = new List<(int U, int V)>(vertexCount * (vertexCount - 1) / 2);
+        for (var u = 0; u < vertexCount; u++)
+        for (var v = u + 1; v < vertexCount; v++)
+            edges.Add((u, v));
+
+        var clauseData = new List<int>();
+        var count = 0;
+        foreach (var set in forbiddenSets)
+        {
+            if (set.Length != setSize)
+                throw new ArgumentException("A forbidden set nem a megadott méretű.", nameof(forbiddenSets));
+
+            var distinct = new HashSet<int>();
+            foreach (var e in set)
+            {
+                if ((uint)e >= (uint)edges.Count)
+                    throw new ArgumentOutOfRangeException(nameof(forbiddenSets), "Élindex kívül esik a gráfon.");
+                if (!distinct.Add(e))
+                    throw new ArgumentException("Egy forbidden set nem tartalmazhat ismétlődő élt.", nameof(forbiddenSets));
+            }
+
+            // x_e=true means red. Forbid all-red and all-blue assignments.
+            foreach (var e in set) clauseData.Add(2 * e);
+            foreach (var e in set) clauseData.Add(2 * e + 1);
+            count++;
+        }
+
+        return new CnfInstance(vertexCount, setSize, edges.ToArray(), clauseData.ToArray())
+        {
+            MatchingsGenerated = count,
+            ClauseCount = checked(count * 2)
+        };
+    }
+
     public static CnfInstance Build(int vertexCount, int matchingSize, bool forbidNested)
     {
         var edges = new List<(int U, int V)>();

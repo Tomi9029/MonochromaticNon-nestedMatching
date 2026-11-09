@@ -31,6 +31,12 @@ internal static class SelfTest
         Check("Compact n=6 matching count", TestCompactN6Count);
         Check("Matching count formula for custom m", TestMatchingCountFormula);
         Check("Matching case inspector indexes", TestMatchingCaseIndexes);
+        Check("Non-nested path family counts K2..K7", TestNonNestedPathCounts);
+        Check("Path extremal exhaustive values K2..K7", TestPathExtremalValues);
+        Check("Path CNF min-max regression K4", TestPathSatMinMaxK4);
+        Check("Counterexample enumeration count K4, M2", TestCounterexampleEnumerationK4);
+        Check("Counterexample enumeration count K7, M3", TestCounterexampleEnumerationK7);
+        Check("Counterexample support classification K7, M3", TestCounterexampleSupportStatsK7);
         Check("Independent lower-bound coloring n=2, m=4", TestIndependentLowerBoundN2);
         Check("Independent lower-bound coloring n=3, m=7", TestIndependentLowerBoundN3);
         Check("Compact lower-bound coloring n=6, m=16", TestCompactLowerBoundN6M16);
@@ -318,6 +324,126 @@ internal static class SelfTest
                     throw new InvalidOperationException("A case inspector matchingje két közös csúcsú élt tartalmaz.");
             }
         }
+    }
+
+    private static void TestNonNestedPathCounts()
+    {
+        var expected = new Dictionary<int, int[]>
+        {
+            [2] = new[] { 1 },
+            [3] = new[] { 3, 3 },
+            [4] = new[] { 6, 12, 8 },
+            [5] = new[] { 10, 30, 40, 21 },
+            [6] = new[] { 15, 60, 120, 126, 55 },
+            [7] = new[] { 21, 105, 280, 441, 385, 142 }
+        };
+
+        foreach (var (m, counts) in expected)
+        for (var k = 1; k < m; k++)
+            Expect(NonNestedPathGenerator.Generate(m, k).Count, counts[k - 1]);
+    }
+
+    private static void TestPathExtremalValues()
+    {
+        var expectedMinimum = new Dictionary<int, int>
+        {
+            [2] = 1,
+            [3] = 2,
+            [4] = 2,
+            [5] = 3,
+            [6] = 3,
+            [7] = 4
+        };
+        var expectedWorstColorings = new Dictionary<int, long>
+        {
+            [2] = 2,
+            [3] = 8,
+            [4] = 16,
+            [5] = 264,
+            [6] = 4,
+            [7] = 7856
+        };
+        var expectedDistributions = new Dictionary<int, long[]>
+        {
+            [2] = new long[] { 0, 2 },
+            [3] = new long[] { 0, 0, 8 },
+            [4] = new long[] { 0, 0, 16, 48 },
+            [5] = new long[] { 0, 0, 0, 264, 760 },
+            [6] = new long[] { 0, 0, 0, 4, 10564, 22200 },
+            [7] = new long[] { 0, 0, 0, 0, 7856, 697968, 1391328 }
+        };
+
+        foreach (var (m, minimum) in expectedMinimum)
+        {
+            var result = PathExtremalSearch.CalculateExhaustive(m);
+            Expect(result.MinimumLongestPath, minimum);
+            Expect(result.WorstColoringCount, expectedWorstColorings[m]);
+            if (!result.Distribution.SequenceEqual(expectedDistributions[m]))
+                throw new InvalidOperationException($"A K_{m} path-hossz eloszlása eltér az ismert ellenőrző értéktől.");
+            Expect(result.Distribution.Sum(), result.TotalColorings);
+            var direct = PathExtremalSearch.FindLongestPath(m, result.WorstColoring);
+            Expect(direct.EdgeLength, minimum);
+        }
+    }
+
+    private static void TestPathSatMinMaxK4()
+    {
+        var paths3 = NonNestedPathGenerator.Generate(4, 3);
+        var instance3 = CnfInstance.BuildFromForbiddenEdgeSets(4, 3, paths3.Select(p => p.EdgeIds));
+        var solver3 = new DpllSolver(instance3);
+        Expect(solver3.FixVariable(0, true), true);
+        Expect(solver3.Solve(), true);
+        var avoiding3 = solver3.GetAssignment();
+        Expect(PathExtremalSearch.FindLongestPath(4, avoiding3).EdgeLength, 2);
+
+        var paths2 = NonNestedPathGenerator.Generate(4, 2);
+        var instance2 = CnfInstance.BuildFromForbiddenEdgeSets(4, 2, paths2.Select(p => p.EdgeIds));
+        var solver2 = new DpllSolver(instance2);
+        Expect(solver2.FixVariable(0, true), true);
+        Expect(solver2.Solve(), false);
+    }
+
+    private static void TestCounterexampleEnumerationK4()
+    {
+        var model = CompactIndependentMatchingModel.Build(4, 2);
+        var solver = new CompactIndependentSolver(model);
+        var result = solver.EnumerateSolutions(maxRepresentatives: 0, fixFirstRed: true);
+        Expect(result.LimitReached, false);
+        Expect(result.RepresentativesFound, 8L);
+        // There are no fixed points under global red/blue exchange.
+        Expect(result.RepresentativesFound * 2, 16L);
+    }
+
+    private static void TestCounterexampleEnumerationK7()
+    {
+        var model = CompactIndependentMatchingModel.Build(7, 3);
+        var solver = new CompactIndependentSolver(model);
+        var result = solver.EnumerateSolutions(maxRepresentatives: 0, fixFirstRed: true);
+        Expect(result.LimitReached, false);
+        Expect(result.RepresentativesFound, 2208L);
+        Expect(result.RepresentativesFound * 2, 4416L);
+    }
+
+    private static void TestCounterexampleSupportStatsK7()
+    {
+        var model = CompactIndependentMatchingModel.Build(7, 3);
+        var stats = new CounterexampleSupportStats(7, 5);
+        var solver = new CompactIndependentSolver(model);
+        var result = solver.EnumerateSolutions(
+            maxRepresentatives: 0,
+            onSolution: (_, coloring) => stats.Add(coloring),
+            fixFirstRed: true);
+
+        Expect(result.LimitReached, false);
+        Expect(result.RepresentativesFound, 2208L);
+        Expect(stats.RedConfined, 68L);
+        Expect(stats.BlueConfined, 62L);
+        Expect(stats.EitherConfined, 130L);
+        Expect(stats.BothConfined, 0L);
+        Expect(stats.NeitherConfined, 2078L);
+        Expect(stats.HasContiguousWitness, 20L);
+        Expect(stats.HasBothSidesIntervalWitness, 4L);
+        Expect(stats.ClassicalCliqueConstruction, 21L);
     }
 
     private static void Expect<T>(T actual, T expected)

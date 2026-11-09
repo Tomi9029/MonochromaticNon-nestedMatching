@@ -34,6 +34,19 @@ internal static class Program
             return;
         }
 
+        if (options.PathExtremal)
+        {
+            if (options.M.HasValue)
+            {
+                Console.Error.WriteLine("Path módnál a -n a csúcsok száma; külön -m nem adható meg.");
+                Environment.ExitCode = 2;
+                return;
+            }
+            Environment.ExitCode = PathExtremalSearch.Run(
+                options.N, options.Force, options.ShowColoring, options.OutputFile);
+            return;
+        }
+
         if (options.N < 1)
         {
             Console.Error.WriteLine("Az n pozitív egész kell legyen.");
@@ -63,6 +76,19 @@ internal static class Program
         {
             Console.Error.WriteLine($"m = {m}. Ez már nagyon nagy keresési tér. Használd a --force kapcsolót, ha szándékosan indítod.");
             Environment.ExitCode = 2;
+            return;
+        }
+
+        if (options.CountCounterexamples)
+        {
+            if (!options.ForbidNested)
+            {
+                Console.Error.WriteLine("A --count-counterexamples jelenleg a nem-nested matching modellhez használható; vedd le a --allow-nested kapcsolót.");
+                Environment.ExitCode = 2;
+                return;
+            }
+            Environment.ExitCode = CounterexampleEnumeration.Run(
+                m, options.N, options.CounterexampleLimit, options.ShowFirstCounterexamples, options.Force);
             return;
         }
 
@@ -218,6 +244,10 @@ internal sealed class Options
     public bool Verify { get; private set; }
     public bool VerifyAll { get; private set; }
     public bool ShowColoring { get; private set; }
+    public bool CountCounterexamples { get; private set; }
+    public long CounterexampleLimit { get; private set; } = 1000;
+    public int ShowFirstCounterexamples { get; private set; }
+    public bool PathExtremal { get; private set; }
     public string? OutputFile { get; private set; }
 
     public static Options Parse(string[] args)
@@ -260,6 +290,20 @@ internal sealed class Options
                 case "--verify": o.Verify = true; break;
                 case "--verify-all": o.VerifyAll = true; break;
                 case "--show-coloring": o.ShowColoring = true; break;
+                case "--count-counterexamples": o.CountCounterexamples = true; break;
+                case "--limit-counterexamples":
+                    if (i + 1 >= args.Length || !long.TryParse(args[++i], out var counterexampleLimit))
+                        throw new ArgumentException("A --limit-counterexamples után nemnegatív egész szám kell.");
+                    if (counterexampleLimit < 0) throw new ArgumentException("A --limit-counterexamples nem lehet negatív.");
+                    o.CounterexampleLimit = counterexampleLimit;
+                    break;
+                case "--show-first":
+                    if (i + 1 >= args.Length || !int.TryParse(args[++i], out var showFirst))
+                        throw new ArgumentException("A --show-first után nemnegatív egész szám kell.");
+                    if (showFirst < 0) throw new ArgumentException("A --show-first nem lehet negatív.");
+                    o.ShowFirstCounterexamples = showFirst;
+                    break;
+                case "--path-extremal": o.PathExtremal = true; break;
                 case "-o":
                 case "--output":
                     if (i + 1 >= args.Length) throw new ArgumentException("A --output után fájlnév kell.");
@@ -285,6 +329,10 @@ internal sealed class Options
         Console.WriteLine("  dotnet run -- --verify -n 4 --nauty");
         Console.WriteLine("  dotnet run -- --verify-all");
         Console.WriteLine("  dotnet run -- --self-test --require-nauty");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 6 -m 16 --limit-counterexamples 1000 --show-first 3");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 6 -m 16 --limit-counterexamples 0");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 6");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 8 --show-coloring");
         Console.WriteLine();
         Console.WriteLine("Kapcsolók:");
         Console.WriteLine("  --n, -n N           a matching mérete (n él)");
@@ -294,6 +342,12 @@ internal sealed class Options
         Console.WriteLine("  --allow-nested      ölelő élek engedélyezése");
         Console.WriteLine("  --show-coloring     SAT esetén a teljes K_m élszínezésének kiírása");
         Console.WriteLine("  --output FILE       SAT esetén a teljes élszínezés mentése fájlba");
+        Console.WriteLine("  --count-counterexamples  az összes ellenpélda-színezés enumerálása és megszámlálása");
+        Console.WriteLine("  --limit-counterexamples N  reprezentáns-limit; 0 = korlátlan enumeráció (alap: 1000)");
+        Console.WriteLine("  --show-first N      az első N ellenpélda-reprezentáns kiírása");
+        Console.WriteLine("  A számláló minden ellenpéldánál osztályozza, hogy valamelyik szín élei elférnek-e 2n-1 csúcson;");
+        Console.WriteLine("  külön jelzi az intervallum-witnesseket és a klasszikus teljes K_(2n-1) konstrukciót.");
+        Console.WriteLine("  --path-extremal     leghosszabb monochromatikus non-nested utak globális minimuma; itt -n=csúcsszám");
         Console.WriteLine("  --nauty             SAT megoldás kanonikusítása nauty-val");
         Console.WriteLine("  --verify            DPLL eredmény független solverrel is ellenőrizve");
         Console.WriteLine("  --verify-all        n=2..5 teljes független keresztellenőrzés m=3n-1 mellett");
@@ -304,5 +358,6 @@ internal sealed class Options
         Console.WriteLine("  --help, -h          segítség");
         Console.WriteLine();
         Console.WriteLine("Megjegyzés: --case egy matchinget választ ki, nem a teljes gráf egy teljes színezését.");
+        Console.WriteLine("Megjegyzés: --path-extremal módban -n a rendezett teljes gráf csúcsszáma.");
     }
 }

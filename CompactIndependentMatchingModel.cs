@@ -49,7 +49,13 @@ internal sealed class CompactIndependentMatchingModel
             edges.Add((i, j));
         }
 
-        var data = new List<int>(vertexCount == 17 && matchingSize == 6 ? 4_900_896 : 0);
+        var initialCapacity = (vertexCount, matchingSize) switch
+        {
+            (17, 6) => 4_900_896,
+            (16, 6) => 1_441_440,
+            _ => 0
+        };
+        var data = new List<int>(initialCapacity);
         var chosen = new int[2 * matchingSize];
         var used = new bool[2 * matchingSize];
         var current = new int[matchingSize];

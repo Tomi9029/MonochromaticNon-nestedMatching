@@ -9,6 +9,13 @@ internal sealed record CompactIndependentResult(
     long Propagations,
     TimeSpan Elapsed);
 
+internal sealed record CompactIndependentEnumerationResult(
+    long RepresentativesFound,
+    bool LimitReached,
+    long DecisionNodes,
+    long Propagations,
+    TimeSpan Elapsed);
+
 /// <summary>
 /// Külön implementáció: nem CNF-et kezel, hanem minden matching állapotát tartja fenn.
 /// CSR incidence-listákat használ a memóriahatékonyság miatt.
@@ -76,6 +83,82 @@ internal sealed class CompactIndependentSolver
         var sat = Search();
         sw.Stop();
         return new CompactIndependentResult(sat, GetAssignment(), DecisionNodes, Propagations, sw.Elapsed);
+    }
+
+    /// <summary>
+    /// Enumerates valid complete colorings. Fixing the first edge red removes
+    /// the color-swap duplicate; callers multiply the representative count by
+    /// two to obtain the number of labelled red/blue colorings.
+    /// maxRepresentatives=0 means unlimited. A positive limit is checked by
+    /// looking for one solution beyond the limit, so LimitReached is exact.
+    /// </summary>
+    public CompactIndependentEnumerationResult EnumerateSolutions(
+        long maxRepresentatives,
+        Action<long, byte[]>? onSolution = null,
+        bool fixFirstRed = true)
+    {
+        if (maxRepresentatives < 0)
+            throw new ArgumentOutOfRangeException(nameof(maxRepresentatives));
+        if (_trailCount != 0 || _queueHead != 0)
+            throw new InvalidOperationException("Az enumerálást új solver példányon kell indítani.");
+
+        var sw = Stopwatch.StartNew();
+        long count = 0;
+        var limitReached = false;
+
+        if (fixFirstRed && _model.EdgeCount > 0 && !Enqueue(0, 2))
+        {
+            sw.Stop();
+            return new CompactIndependentEnumerationResult(0, false, DecisionNodes, Propagations, sw.Elapsed);
+        }
+
+        EnumerateSearch(maxRepresentatives, onSolution, ref count, ref limitReached);
+        sw.Stop();
+        return new CompactIndependentEnumerationResult(count, limitReached, DecisionNodes, Propagations, sw.Elapsed);
+    }
+
+    private bool EnumerateSearch(
+        long maxRepresentatives,
+        Action<long, byte[]>? onSolution,
+        ref long count,
+        ref bool limitReached)
+    {
+        if (!Propagate()) return false;
+
+        var variable = ChooseVariable();
+        if (variable < 0)
+        {
+            // We deliberately detect, but do not count, the first solution beyond
+            // the requested cap. This makes RepresentativesFound the exact number
+            // actually processed by the callback.
+            if (maxRepresentatives > 0 && count >= maxRepresentatives)
+            {
+                limitReached = true;
+                return true;
+            }
+
+            count++;
+            // The callback must consume this live array immediately and must not
+            // retain it: the solver mutates it during subsequent backtracking.
+            // Passing the internal byte[] avoids allocating one bool[] per coloring,
+            // which matters when the enumerator finds millions of representatives.
+            onSolution?.Invoke(count, _assignment);
+            return false;
+        }
+
+        DecisionNodes++;
+        var mark = _trailCount;
+        var stop = false;
+
+        if (Enqueue(variable, 2))
+            stop = EnumerateSearch(maxRepresentatives, onSolution, ref count, ref limitReached);
+        Backtrack(mark);
+        if (stop) return true;
+
+        if (Enqueue(variable, 1))
+            stop = EnumerateSearch(maxRepresentatives, onSolution, ref count, ref limitReached);
+        Backtrack(mark);
+        return stop;
     }
 
     public bool[] GetAssignment()
