@@ -22,6 +22,11 @@ Az összes jelenlegi kulcseset:
 dotnet run -- --verify-all
 ```
 
+Enumerálás:
+```powershell
+dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0
+```
+
 Ez `n=2..5` eseteket futtatja a két solverrel, és összehasonlítja az eredményeket.
 
 nauty-val együtt egy SAT esetben:
