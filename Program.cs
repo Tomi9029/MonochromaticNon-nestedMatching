@@ -88,7 +88,7 @@ internal static class Program
                 return;
             }
             Environment.ExitCode = CounterexampleEnumeration.Run(
-                m, options.N, options.CounterexampleLimit, options.ShowFirstCounterexamples, options.Force);
+                m, options.N, options.CounterexampleLimit, options.ShowFirstCounterexamples, options.ShowFirstNonBlockCounterexamples, options.ShowFirstNoIntervalSupport, options.Force);
             return;
         }
 
@@ -247,6 +247,8 @@ internal sealed class Options
     public bool CountCounterexamples { get; private set; }
     public long CounterexampleLimit { get; private set; } = 1000;
     public int ShowFirstCounterexamples { get; private set; }
+    public int ShowFirstNonBlockCounterexamples { get; private set; }
+    public int ShowFirstNoIntervalSupport { get; private set; }
     public bool PathExtremal { get; private set; }
     public string? OutputFile { get; private set; }
 
@@ -303,6 +305,18 @@ internal sealed class Options
                     if (showFirst < 0) throw new ArgumentException("A --show-first nem lehet negatív.");
                     o.ShowFirstCounterexamples = showFirst;
                     break;
+                case "--show-first-non-block":
+                    if (i + 1 >= args.Length || !int.TryParse(args[++i], out var showFirstNonBlock))
+                        throw new ArgumentException("A --show-first-non-block után nemnegatív egész szám kell.");
+                    if (showFirstNonBlock < 0) throw new ArgumentException("A --show-first-non-block nem lehet negatív.");
+                    o.ShowFirstNonBlockCounterexamples = showFirstNonBlock;
+                    break;
+                case "--show-first-no-interval-support":
+                    if (i + 1 >= args.Length || !int.TryParse(args[++i], out var showFirstNoIntervalSupport))
+                        throw new ArgumentException("A --show-first-no-interval-support után nemnegatív egész szám kell.");
+                    if (showFirstNoIntervalSupport < 0) throw new ArgumentException("A --show-first-no-interval-support nem lehet negatív.");
+                    o.ShowFirstNoIntervalSupport = showFirstNoIntervalSupport;
+                    break;
                 case "--path-extremal": o.PathExtremal = true; break;
                 case "-o":
                 case "--output":
@@ -331,8 +345,13 @@ internal sealed class Options
         Console.WriteLine("  dotnet run -- --self-test --require-nauty");
         Console.WriteLine("  dotnet run -- --count-counterexamples -n 6 -m 16 --limit-counterexamples 1000 --show-first 3");
         Console.WriteLine("  dotnet run -- --count-counterexamples -n 6 -m 16 --limit-counterexamples 0");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --show-first-non-block 5");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --show-first-no-interval-support 5");
         Console.WriteLine("  dotnet run -- --path-extremal -n 6");
         Console.WriteLine("  dotnet run -- --path-extremal -n 8 --show-coloring");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 11");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 12 --force");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 13 --force");
         Console.WriteLine();
         Console.WriteLine("Kapcsolók:");
         Console.WriteLine("  --n, -n N           a matching mérete (n él)");
@@ -345,9 +364,13 @@ internal sealed class Options
         Console.WriteLine("  --count-counterexamples  az összes ellenpélda-színezés enumerálása és megszámlálása");
         Console.WriteLine("  --limit-counterexamples N  reprezentáns-limit; 0 = korlátlan enumeráció (alap: 1000)");
         Console.WriteLine("  --show-first N      az első N ellenpélda-reprezentáns kiírása");
-        Console.WriteLine("  A számláló minden ellenpéldánál osztályozza, hogy valamelyik szín élei elférnek-e 2n-1 csúcson;");
-        Console.WriteLine("  külön jelzi az intervallum-witnesseket és a klasszikus teljes K_(2n-1) konstrukciót.");
+        Console.WriteLine("  --show-first-non-block N  az első N ellenpélda, amely nem pontos intervallumos K_k/komplement blokk");
+        Console.WriteLine("  --show-first-no-interval-support N  az első N ellenpélda, ahol egyik szín supportja sem fér intervallumba");
+        Console.WriteLine("  A számláló külön kezeli: support-befoglalás, tetszőleges k-halmazos K_k/komplement,");
+        Console.WriteLine("  valamint az egymást követő k csúcsból álló blokkot (a feltöltött rajz mintáját).");
         Console.WriteLine("  --path-extremal     leghosszabb monochromatikus non-nested utak globális minimuma; itt -n=csúcsszám");
+        Console.WriteLine("                      K2..K7: teljes színezés-enumeráció; K8..K11: SAT; K12..K13: SAT + --force;");
+        Console.WriteLine("                      K13 fölött a jelenlegi explicit útgenerátor nem támogatott.");
         Console.WriteLine("  --nauty             SAT megoldás kanonikusítása nauty-val");
         Console.WriteLine("  --verify            DPLL eredmény független solverrel is ellenőrizve");
         Console.WriteLine("  --verify-all        n=2..5 teljes független keresztellenőrzés m=3n-1 mellett");

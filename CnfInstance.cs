@@ -68,7 +68,7 @@ internal sealed class CnfInstance
     public static CnfInstance BuildFromForbiddenEdgeSets(
         int vertexCount,
         int setSize,
-        IEnumerable<int[]> forbiddenSets)
+        IReadOnlyList<int[]> forbiddenSets)
     {
         if (vertexCount < 0 || setSize < 1)
             throw new ArgumentOutOfRangeException();
@@ -78,32 +78,36 @@ internal sealed class CnfInstance
         for (var v = u + 1; v < vertexCount; v++)
             edges.Add((u, v));
 
-        var clauseData = new List<int>();
-        var count = 0;
-        foreach (var set in forbiddenSets)
+        // Allocate the final flat literal array once. This avoids List growth
+        // and transient duplicate buffers for the large K_12/K_13 path families.
+        var clauseData = new int[checked(forbiddenSets.Count * setSize * 2)];
+        var offset = 0;
+        for (var index = 0; index < forbiddenSets.Count; index++)
         {
+            var set = forbiddenSets[index];
             if (set.Length != setSize)
                 throw new ArgumentException("A forbidden set nem a megadott méretű.", nameof(forbiddenSets));
 
-            var distinct = new HashSet<int>();
-            foreach (var e in set)
+            // Check distinctness without allocating one HashSet per path.
+            for (var i = 0; i < set.Length; i++)
             {
+                var e = set[i];
                 if ((uint)e >= (uint)edges.Count)
                     throw new ArgumentOutOfRangeException(nameof(forbiddenSets), "Élindex kívül esik a gráfon.");
-                if (!distinct.Add(e))
-                    throw new ArgumentException("Egy forbidden set nem tartalmazhat ismétlődő élt.", nameof(forbiddenSets));
+                for (var j = 0; j < i; j++)
+                    if (set[j] == e)
+                        throw new ArgumentException("Egy forbidden set nem tartalmazhat ismétlődő élt.", nameof(forbiddenSets));
             }
 
             // x_e=true means red. Forbid all-red and all-blue assignments.
-            foreach (var e in set) clauseData.Add(2 * e);
-            foreach (var e in set) clauseData.Add(2 * e + 1);
-            count++;
+            for (var i = 0; i < set.Length; i++) clauseData[offset++] = 2 * set[i];
+            for (var i = 0; i < set.Length; i++) clauseData[offset++] = 2 * set[i] + 1;
         }
 
-        return new CnfInstance(vertexCount, setSize, edges.ToArray(), clauseData.ToArray())
+        return new CnfInstance(vertexCount, setSize, edges.ToArray(), clauseData)
         {
-            MatchingsGenerated = count,
-            ClauseCount = checked(count * 2)
+            MatchingsGenerated = forbiddenSets.Count,
+            ClauseCount = checked(forbiddenSets.Count * 2)
         };
     }
 

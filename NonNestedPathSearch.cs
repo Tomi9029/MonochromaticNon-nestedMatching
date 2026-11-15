@@ -4,7 +4,7 @@ using System.Text;
 
 namespace OrderedMatching;
 
-internal sealed record NonNestedPath(int[] Vertices, int[] EdgeIds, ulong EdgeMask)
+internal sealed record NonNestedPath(int[] EdgeIds)
 {
     public int Length => EdgeIds.Length;
 }
@@ -33,14 +33,11 @@ internal static class NonNestedPathGenerator
             {
                 // A path and its reverse are the same undirected path.
                 if (vertices[0] >= vertices[edgeLength]) return;
-                var vertexCopy = (int[])vertices.Clone();
+                // The path sequence is needed only while generating the path.
+                // The SAT/exhaustive consumers need its edge set only, so keep
+                // just the edge ids to reduce memory for K_12 and K_13.
                 var edgeCopy = (int[])edgeIds.Clone();
-                ulong mask = 0;
-                foreach (var edgeId in edgeCopy)
-                {
-                    if (edgeId < 64) mask |= 1UL << edgeId;
-                }
-                result.Add(new NonNestedPath(vertexCopy, edgeCopy, mask));
+                result.Add(new NonNestedPath(edgeCopy));
                 return;
             }
 
@@ -109,15 +106,29 @@ internal static class PathExtremalSearch
         }
         if (vertexCount <= 7)
             return RunExhaustive(vertexCount, showColoring, outputFile);
-        if (vertexCount > 10)
+
+        // The current explicit path-family + DPLL implementation is sized for
+        // K_8..K_13. K_12 and K_13 can create hundreds of thousands of path
+        // constraints, so require an explicit opt-in before allocating them.
+        const int defaultSatMaximum = 11;
+        const int forceSatMaximum = 13;
+        if (vertexCount > forceSatMaximum)
         {
-            Console.Error.WriteLine("A path mód jelenlegi útgenerátora legfeljebb 10 csúcsot támogat.");
+            Console.Error.WriteLine($"A path mód jelenlegi explicit útgenerátora legfeljebb K_{forceSatMaximum}-ig támogatott.");
+            Console.Error.WriteLine("Nagyobb gráfhoz már streaming útgenerálás / más SAT backend szükséges.");
             return 2;
         }
-        if (vertexCount > 9 && !force)
+        if (vertexCount > defaultSatMaximum && !force)
         {
-            Console.Error.WriteLine("10 csúcsnál a leghosszabb utak generálása nagy memóriát igényelhet. Tudatos futtatáshoz add meg a --force kapcsolót.");
+            Console.Error.WriteLine($"K_{vertexCount} esetén az útcsalád és a SAT-formula nagy memóriát igényelhet.");
+            Console.Error.WriteLine($"A K_{vertexCount} futtatásához add meg a --force kapcsolót (jelenlegi felső határ: K_{forceSatMaximum}).");
             return 2;
+        }
+        if (vertexCount > 11)
+        {
+            Console.WriteLine("FIGYELEM: nagy útcsalád készül; a memóriaigény és a SAT-keresési idő jelentős lehet.");
+            Console.WriteLine("A futás pontos eredményt ad, ha befejeződik; időkorlátot nem alkalmaz.");
+            Console.WriteLine();
         }
         return RunSatMinMax(vertexCount, showColoring, outputFile);
     }
@@ -165,9 +176,25 @@ internal static class PathExtremalSearch
 
         var edgeCount = m * (m - 1) / 2;
         var coloringCount = 1UL << edgeCount;
-        var pathsByLength = new List<NonNestedPath>[m];
+        // Literal enumeration is restricted to m<=7, so every edge id fits
+        // safely in a 64-bit mask. The general path generator itself no longer
+        // stores a truncated ulong mask; SAT mode uses the full int edge ids.
+        var pathsByLength = new List<(NonNestedPath Path, ulong EdgeMask)>[m];
         for (var k = 1; k < m; k++)
-            pathsByLength[k] = NonNestedPathGenerator.Generate(m, k);
+        {
+            pathsByLength[k] = new List<(NonNestedPath Path, ulong EdgeMask)>();
+            foreach (var path in NonNestedPathGenerator.Generate(m, k))
+            {
+                ulong mask = 0;
+                foreach (var edgeId in path.EdgeIds)
+                {
+                    if ((uint)edgeId >= 64)
+                        throw new InvalidOperationException("A 64 bites enumerációs maszkhoz túl nagy élindex került.");
+                    mask |= 1UL << edgeId;
+                }
+                pathsByLength[k].Add((path, mask));
+            }
+        }
 
         var distribution = new long[m];
         var worstLength = m;
@@ -180,10 +207,10 @@ internal static class PathExtremalSearch
             var longest = 0;
             for (var k = m - 1; k >= 1 && longest == 0; k--)
             {
-                foreach (var path in pathsByLength[k])
+                foreach (var item in pathsByLength[k])
                 {
-                    var redMask = coloring & path.EdgeMask;
-                    if (redMask == 0 || redMask == path.EdgeMask)
+                    var redMask = coloring & item.EdgeMask;
+                    if (redMask == 0 || redMask == item.EdgeMask)
                     {
                         longest = k;
                         break;
@@ -235,7 +262,16 @@ internal static class PathExtremalSearch
             Console.WriteLine($"k={k}: a non-nested utak generálása...");
             var buildSw = Stopwatch.StartNew();
             var paths = NonNestedPathGenerator.Generate(m, k);
-            var instance = CnfInstance.BuildFromForbiddenEdgeSets(m, k, paths.Select(p => p.EdgeIds));
+            var edgeSets = new int[paths.Count][];
+            for (var i = 0; i < paths.Count; i++)
+                edgeSets[i] = paths[i].EdgeIds;
+            var pathCount = paths.Count;
+            var instance = CnfInstance.BuildFromForbiddenEdgeSets(m, k, edgeSets);
+            // The CNF now owns a compact flat literal array. Release the
+            // generated path objects before constructing the DPLL watch lists.
+            Array.Clear(edgeSets);
+            paths.Clear();
+            GC.Collect();
             buildSw.Stop();
 
             var solveSw = Stopwatch.StartNew();
@@ -243,7 +279,7 @@ internal static class PathExtremalSearch
             var fixedOk = edgeCount == 0 || solver.FixVariable(0, true);
             var hasAvoidingColoring = fixedOk && solver.Solve();
             solveSw.Stop();
-            Console.WriteLine($"k={k}: utak={paths.Count:N0}, klauzulák={instance.ClauseCount:N0}, " +
+            Console.WriteLine($"k={k}: utak={pathCount:N0}, klauzulák={instance.ClauseCount:N0}, " +
                               $"avoid-coloring={(hasAvoidingColoring ? "SAT" : "UNSAT")}, " +
                               $"decisions={solver.DecisionNodes:N0}, build={buildSw.Elapsed}, solve={solveSw.Elapsed}");
 

@@ -31,7 +31,7 @@ internal static class SelfTest
         Check("Compact n=6 matching count", TestCompactN6Count);
         Check("Matching count formula for custom m", TestMatchingCountFormula);
         Check("Matching case inspector indexes", TestMatchingCaseIndexes);
-        Check("Non-nested path family counts K2..K7", TestNonNestedPathCounts);
+        Check("Non-nested path family counts K2..K11", TestNonNestedPathCounts);
         Check("Path extremal exhaustive values K2..K7", TestPathExtremalValues);
         Check("Path CNF min-max regression K4", TestPathSatMinMaxK4);
         Check("Counterexample enumeration count K4, M2", TestCounterexampleEnumerationK4);
@@ -335,7 +335,11 @@ internal static class SelfTest
             [4] = new[] { 6, 12, 8 },
             [5] = new[] { 10, 30, 40, 21 },
             [6] = new[] { 15, 60, 120, 126, 55 },
-            [7] = new[] { 21, 105, 280, 441, 385, 142 }
+            [7] = new[] { 21, 105, 280, 441, 385, 142 },
+            [8] = new[] { 28, 168, 560, 1176, 1540, 1136, 369 },
+            [9] = new[] { 36, 252, 1008, 2646, 4620, 5112, 3321, 950 },
+            [10] = new[] { 45, 360, 1680, 5292, 11550, 17040, 16605, 9500, 2455 },
+            [11] = new[] { 55, 495, 2640, 9702, 25410, 46860, 60885, 52250, 27005, 6319 }
         };
 
         foreach (var (m, counts) in expected)
@@ -389,7 +393,7 @@ internal static class SelfTest
     private static void TestPathSatMinMaxK4()
     {
         var paths3 = NonNestedPathGenerator.Generate(4, 3);
-        var instance3 = CnfInstance.BuildFromForbiddenEdgeSets(4, 3, paths3.Select(p => p.EdgeIds));
+        var instance3 = CnfInstance.BuildFromForbiddenEdgeSets(4, 3, paths3.Select(p => p.EdgeIds).ToArray());
         var solver3 = new DpllSolver(instance3);
         Expect(solver3.FixVariable(0, true), true);
         Expect(solver3.Solve(), true);
@@ -397,7 +401,7 @@ internal static class SelfTest
         Expect(PathExtremalSearch.FindLongestPath(4, avoiding3).EdgeLength, 2);
 
         var paths2 = NonNestedPathGenerator.Generate(4, 2);
-        var instance2 = CnfInstance.BuildFromForbiddenEdgeSets(4, 2, paths2.Select(p => p.EdgeIds));
+        var instance2 = CnfInstance.BuildFromForbiddenEdgeSets(4, 2, paths2.Select(p => p.EdgeIds).ToArray());
         var solver2 = new DpllSolver(instance2);
         Expect(solver2.FixVariable(0, true), true);
         Expect(solver2.Solve(), false);
@@ -444,6 +448,7 @@ internal static class SelfTest
         Expect(stats.HasContiguousWitness, 20L);
         Expect(stats.HasBothSidesIntervalWitness, 4L);
         Expect(stats.ClassicalCliqueConstruction, 21L);
+        Expect(stats.IntervalCliqueConstruction, 3L);
     }
 
     private static void Expect<T>(T actual, T expected)

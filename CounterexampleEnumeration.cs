@@ -5,7 +5,7 @@ namespace OrderedMatching;
 
 internal static class CounterexampleEnumeration
 {
-    public static int Run(int vertexCount, int matchingSize, long limit, int showFirst, bool force)
+    public static int Run(int vertexCount, int matchingSize, long limit, int showFirst, int showFirstNonBlock, int showFirstNoIntervalSupport, bool force)
     {
         if (matchingSize < 1)
         {
@@ -17,7 +17,7 @@ internal static class CounterexampleEnumeration
             Console.Error.WriteLine("Az ellenpélda-enumerátor jelenleg 0 <= m <= 28 tartományt támogat.");
             return 2;
         }
-        if (limit < 0 || showFirst < 0)
+        if (limit < 0 || showFirst < 0 || showFirstNonBlock < 0 || showFirstNoIntervalSupport < 0)
         {
             Console.Error.WriteLine("A limit és a show-first nem lehet negatív.");
             return 2;
@@ -69,19 +69,35 @@ internal static class CounterexampleEnumeration
         Console.WriteLine(limit == 0
             ? "Korlát: nincs (a teljes enumerálás potenciálisan nagyon hosszú lehet)."
             : $"Színcsere-reprezentáns limit: {limit:N0}.");
-        Console.WriteLine($"Vizsgált szerkezeti feltétel: létezik-e {supportSize} csúcsú S, amelyen kívül nincs S-en belüli színű él?");
-        Console.WriteLine("Ekvivalens feltétel: valamelyik szín összes éle legfeljebb 2n-1 csúcsot érint.");
+        Console.WriteLine($"Support-feltétel: van-e {supportSize} csúcsú S, amelyen kívül az adott színnek nincs éle?");
+        Console.WriteLine($"Blokk-feltétel: van-e egymást követő {supportSize} csúcs, amelyen az egyik szín pontosan teljes K_{supportSize}, és minden más él a másik színű?");
         Console.WriteLine();
 
         var stats = new CounterexampleSupportStats(vertexCount, supportSize);
         var shown = 0;
+        var shownNonBlock = 0;
+        var shownNoIntervalSupport = 0;
         Action<long, byte[]> callback = (index, assignment) =>
         {
-            stats.Add(assignment);
+            var classification = stats.Add(assignment);
             if (index <= showFirst)
             {
                 shown++;
                 Console.WriteLine($"--- ellenpélda-reprezentáns #{index:N0} (az első él piros) ---");
+                Console.WriteLine(FormatColoring(vertexCount, matchingSize, assignment));
+                Console.WriteLine(stats.FormatCurrent(assignment));
+            }
+            if (!classification.IsIntervalBlock && shownNonBlock < showFirstNonBlock)
+            {
+                shownNonBlock++;
+                Console.WriteLine($"--- NEM PONTOS INTERVALLUM-K_k BLOKK #{shownNonBlock:N0} (reprezentáns #{index:N0}) ---");
+                Console.WriteLine(FormatColoring(vertexCount, matchingSize, assignment));
+                Console.WriteLine(stats.FormatCurrent(assignment));
+            }
+            if (!classification.HasIntervalSupportWitness && shownNoIntervalSupport < showFirstNoIntervalSupport)
+            {
+                shownNoIntervalSupport++;
+                Console.WriteLine($"--- EGYIK SZÍN SUPPORTJA SEM FÉR INTERVALLUMBA #{shownNoIntervalSupport:N0} (reprezentáns #{index:N0}) ---");
                 Console.WriteLine(FormatColoring(vertexCount, matchingSize, assignment));
                 Console.WriteLine(stats.FormatCurrent(assignment));
             }
@@ -102,7 +118,7 @@ internal static class CounterexampleEnumeration
         Console.WriteLine($"Propagációk:                                    {result.Propagations:N0}");
         Console.WriteLine($"Idő:                                            {result.Elapsed}");
 
-        stats.PrintSummary(colorSwapFactor, limitReached: result.LimitReached);
+        stats.PrintSummary(colorSwapFactor, result.RepresentativesFound, limitReached: result.LimitReached);
 
         if (result.LimitReached)
         {
@@ -118,6 +134,10 @@ internal static class CounterexampleEnumeration
 
         if (showFirst > shown)
             Console.WriteLine($"A kért első {showFirst} helyett csak {shown} reprezentánst találtunk.");
+        if (showFirstNonBlock > shownNonBlock)
+            Console.WriteLine($"A kért {showFirstNonBlock} nem pontos intervallum-blokk helyett csak {shownNonBlock} volt a feldolgozottak között.");
+        if (showFirstNoIntervalSupport > shownNoIntervalSupport)
+            Console.WriteLine($"A kért {showFirstNoIntervalSupport} intervallumos support-witness nélküli ellenpélda helyett csak {shownNoIntervalSupport} volt a feldolgozottak között.");
         return 0;
     }
 
@@ -139,6 +159,15 @@ internal static class CounterexampleEnumeration
     }
 }
 
+internal readonly record struct CounterexampleClassification(
+    int RedSupport,
+    int BlueSupport,
+    bool RedConfined,
+    bool BlueConfined,
+    bool HasIntervalSupportWitness,
+    bool IsArbitraryBlock,
+    bool IsIntervalBlock);
+
 /// <summary>
 /// Per-counterexample structural classification. The support of a color is
 /// the set of vertices incident with at least one edge of that color.
@@ -158,7 +187,10 @@ internal sealed class CounterexampleSupportStats
     public long NeitherConfined { get; private set; }
     public long HasContiguousWitness { get; private set; }
     public long HasBothSidesIntervalWitness { get; private set; }
+    /// <summary>One color is exactly K_k on an arbitrary k-set; the other color is its edge-complement.</summary>
     public long ClassicalCliqueConstruction { get; private set; }
+    /// <summary>Same construction, but the k-set must be a consecutive interval in the ordered vertex set.</summary>
+    public long IntervalCliqueConstruction { get; private set; }
     public BigInteger RedCandidateSetCount { get; private set; }
     public BigInteger BlueCandidateSetCount { get; private set; }
 
@@ -170,7 +202,7 @@ internal sealed class CounterexampleSupportStats
         _blueSupport = new bool[vertexCount];
     }
 
-    public void Add(byte[] colors)
+    public CounterexampleClassification Add(byte[] colors)
     {
         Array.Clear(_redSupport);
         Array.Clear(_blueSupport);
@@ -222,9 +254,22 @@ internal sealed class CounterexampleSupportStats
             HasBothSidesIntervalWitness++;
 
         var targetCliqueEdges = _k * (_k - 1) / 2;
-        if ((red.Count == _k && redEdges == targetCliqueEdges) ||
-            (blue.Count == _k && blueEdges == targetCliqueEdges))
+        var redIsCliqueComplement = red.Count == _k && redEdges == targetCliqueEdges;
+        var blueIsCliqueComplement = blue.Count == _k && blueEdges == targetCliqueEdges;
+        var isArbitraryCliqueBlock = redIsCliqueComplement || blueIsCliqueComplement;
+        var isIntervalCliqueBlock =
+            (redIsCliqueComplement && red.Max - red.Min + 1 == _k) ||
+            (blueIsCliqueComplement && blue.Max - blue.Min + 1 == _k);
+
+        if (isArbitraryCliqueBlock)
             ClassicalCliqueConstruction++;
+        if (isIntervalCliqueBlock)
+            IntervalCliqueConstruction++;
+
+        return new CounterexampleClassification(
+            red.Count, blue.Count, redFits, blueFits,
+            HasIntervalWitness(red) || HasIntervalWitness(blue),
+            isArbitraryCliqueBlock, isIntervalCliqueBlock);
     }
 
     public string FormatCurrent(byte[] colors)
@@ -245,30 +290,63 @@ internal sealed class CounterexampleSupportStats
         sb.AppendLine($"  Piros élek supportja: {red.Count} csúcs");
         sb.AppendLine($"  Kék élek supportja:   {blue.Count} csúcs");
         sb.AppendLine($"  Van megfelelő S:      {(red.Count <= _k || blue.Count <= _k ? "IGEN" : "NEM")}");
+        var targetCliqueEdges = _k * (_k - 1) / 2;
+        var redExactClique = red.Count == _k && CountEdgesOfColor(colors, 2) == targetCliqueEdges;
+        var blueExactClique = blue.Count == _k && CountEdgesOfColor(colors, 1) == targetCliqueEdges;
+        var arbitraryBlock = redExactClique || blueExactClique;
+        var intervalBlock =
+            (redExactClique && red.Max - red.Min + 1 == _k) ||
+            (blueExactClique && blue.Max - blue.Min + 1 == _k);
+        var intervalSupportWitness = HasIntervalWitness(red) || HasIntervalWitness(blue);
+        sb.AppendLine($"  Van intervallum, amelybe valamelyik szín supportja belefér: {(intervalSupportWitness ? "IGEN" : "NEM")}");
+        sb.AppendLine($"  Tetszőleges k-halmazos K_k/komplement blokk: {(arbitraryBlock ? "IGEN" : "NEM")}");
+        sb.AppendLine($"  Egymást követő k csúcsos teljes K_k blokk (a rajzolt minta): {(intervalBlock ? "IGEN" : "NEM")}");
         if (red.Count <= _k) sb.AppendLine($"  Piros színhez megfelelő S-k száma: {MatchingCountMath.Binomial(_m - red.Count, _k - red.Count)}");
         if (blue.Count <= _k) sb.AppendLine($"  Kék színhez megfelelő S-k száma:   {MatchingCountMath.Binomial(_m - blue.Count, _k - blue.Count)}");
         return sb.ToString();
     }
 
-    public void PrintSummary(int colorSwapFactor, bool limitReached)
+    public void PrintSummary(int colorSwapFactor, long totalRepresentatives, bool limitReached)
     {
         var suffix = limitReached ? " (alsó korlát)" : string.Empty;
         Console.WriteLine();
         Console.WriteLine($"=== Szerkezeti statisztika: k=2n-1={_k} ===");
-        Print("Piros supportja <= k", RedConfined, colorSwapFactor, suffix);
-        Print("Kék supportja <= k", BlueConfined, colorSwapFactor, suffix);
-        Print("Legalább az egyik szín supportja <= k", EitherConfined, colorSwapFactor, suffix);
-        Print("Mindkét szín supportja <= k", BothConfined, colorSwapFactor, suffix);
-        Print("Egyik szín supportja sem fér el k csúcson", NeitherConfined, colorSwapFactor, suffix);
-        Print("Van egymást követő k csúcsú intervallum-witness", HasContiguousWitness, colorSwapFactor, suffix);
-        Print("Van olyan intervallum-witness, amelyen kívül mindkét oldalon marad csúcs", HasBothSidesIntervalWitness, colorSwapFactor, suffix);
-        Print("Klasszikus teljes K_k / komplement konstrukció", ClassicalCliqueConstruction, colorSwapFactor, suffix);
-        Console.WriteLine($"Piros support által megengedett S-halmazok összesen: {RedCandidateSetCount * colorSwapFactor:N0}{suffix}");
-        Console.WriteLine($"Kék support által megengedett S-halmazok összesen:   {BlueCandidateSetCount * colorSwapFactor:N0}{suffix}");
-        Console.WriteLine("Megjegyzés: az S-halmazok számánál ugyanaz az S több színezéshez is hozzájárulhat; ez nem színezésszám.");
+
+        // Under the fixed-first-edge convention, swapping red/blue maps the
+        // red-support count of a representative to the blue-support count of
+        // its paired labelled coloring. Therefore the labelled red total is
+        // RedConfined + BlueConfined, not 2*RedConfined.
+        var labelledColorSpecific = RedConfined + BlueConfined;
+        Console.WriteLine($"Piros supportja <= k: {labelledColorSpecific:N0}{suffix} (reprezentáns red: {RedConfined:N0}, párja blue: {BlueConfined:N0})");
+        Console.WriteLine($"Kék supportja <= k:   {labelledColorSpecific:N0}{suffix} (színcsere-szimmetria miatt ugyanennyi)");
+
+        PrintInvariant("Legalább az egyik szín supportja <= k", EitherConfined, colorSwapFactor, suffix);
+        PrintInvariant("Mindkét szín supportja <= k", BothConfined, colorSwapFactor, suffix);
+        PrintInvariant("Egyik szín supportja sem fér el k csúcson", NeitherConfined, colorSwapFactor, suffix);
+        PrintInvariant("Van egymást követő k csúcsú intervallum-witness (support-befoglalás)", HasContiguousWitness, colorSwapFactor, suffix);
+        PrintInvariant("Egyik szín supportja sem fér egymást követő k csúcsba", totalRepresentatives - HasContiguousWitness, colorSwapFactor, suffix);
+        PrintInvariant("Van olyan intervallum-witness, amelyen kívül mindkét oldalon marad csúcs", HasBothSidesIntervalWitness, colorSwapFactor, suffix);
+
+        PrintInvariant("Klasszikus K_k/komplement blokk tetszőleges k csúcshalmazon", ClassicalCliqueConstruction, colorSwapFactor, suffix);
+        PrintInvariant("K_k/komplement blokk egymást követő k csúcson (a rajzolt minta)", IntervalCliqueConstruction, colorSwapFactor, suffix);
+        PrintInvariant("NEM ilyen egymást követő blokkos ellenpélda", totalRepresentatives - IntervalCliqueConstruction, colorSwapFactor, suffix);
+        PrintInvariant("Nincs K_k/komplement blokk még tetszőleges k-halmazon sem", totalRepresentatives - ClassicalCliqueConstruction, colorSwapFactor, suffix);
+
+        var labelledCandidateSets = RedCandidateSetCount + BlueCandidateSetCount;
+        Console.WriteLine($"Piros supporthoz tartozó S-halmaz előfordulások (címkézett): {labelledCandidateSets:N0}{suffix}");
+        Console.WriteLine($"Kék supporthoz tartozó S-halmaz előfordulások (címkézett):   {labelledCandidateSets:N0}{suffix}");
+        Console.WriteLine("Megjegyzés: az S-halmazok előfordulásait számláljuk; ugyanaz az S több színezéshez is hozzájárulhat.");
     }
 
-    private static void Print(string label, long representatives, int factor, string suffix)
+    private static int CountEdgesOfColor(byte[] colors, byte color)
+    {
+        var count = 0;
+        for (var i = 0; i < colors.Length; i++)
+            if (colors[i] == color) count++;
+        return count;
+    }
+
+    private static void PrintInvariant(string label, long representatives, int factor, string suffix)
         => Console.WriteLine($"{label}: {representatives * factor:N0}{suffix} (színcsere-reprezentáns: {representatives:N0})");
 
     private (int Count, int Min, int Max) GetSupportInfo(bool[] support)
