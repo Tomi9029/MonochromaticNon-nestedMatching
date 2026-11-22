@@ -5,7 +5,18 @@ namespace OrderedMatching;
 
 internal static class CounterexampleEnumeration
 {
-    public static int Run(int vertexCount, int matchingSize, long limit, int showFirst, int showFirstNonBlock, int showFirstNoIntervalSupport, bool force)
+    public static int Run(
+        int vertexCount,
+        int matchingSize,
+        long limit,
+        int showFirst,
+        int showFirstNonBlock,
+        int showFirstNoIntervalSupport,
+        bool force,
+        bool saveNonBlock,
+        bool saveNoIntervalSupport,
+        string? saveDirectory,
+        long saveLimit)
     {
         if (matchingSize < 1)
         {
@@ -17,7 +28,7 @@ internal static class CounterexampleEnumeration
             Console.Error.WriteLine("Az ellenpélda-enumerátor jelenleg 0 <= m <= 28 tartományt támogat.");
             return 2;
         }
-        if (limit < 0 || showFirst < 0 || showFirstNonBlock < 0 || showFirstNoIntervalSupport < 0)
+        if (limit < 0 || saveLimit < 0 || showFirst < 0 || showFirstNonBlock < 0 || showFirstNoIntervalSupport < 0)
         {
             Console.Error.WriteLine("A limit és a show-first nem lehet negatív.");
             return 2;
@@ -71,7 +82,21 @@ internal static class CounterexampleEnumeration
             : $"Színcsere-reprezentáns limit: {limit:N0}.");
         Console.WriteLine($"Support-feltétel: van-e {supportSize} csúcsú S, amelyen kívül az adott színnek nincs éle?");
         Console.WriteLine($"Blokk-feltétel: van-e egymást követő {supportSize} csúcs, amelyen az egyik szín pontosan teljes K_{supportSize}, és minden más él a másik színű?");
-        Console.WriteLine();
+        Console.WriteLine("Mentési feltételek:");
+        Console.WriteLine($"  Nem pontos intervallumos K_k/komplement blokk mentése: {(saveNonBlock ? "BE" : "KI")}");
+        Console.WriteLine($"  Egyik szín supportja sem fér intervallumba mentése: {(saveNoIntervalSupport ? "BE" : "KI")}");
+
+        CounterexampleAdjacencyExporter? exporter = null;
+        if (saveNonBlock || saveNoIntervalSupport)
+        {
+            exporter = new CounterexampleAdjacencyExporter(vertexCount, matchingSize, saveDirectory, saveLimit);
+            Console.WriteLine($"Mentési könyvtár: {exporter.OutputDirectory}");
+            Console.WriteLine(saveLimit == 0
+                ? "Mentési limit: nincs (minden kiválasztott ellenpélda mentése)."
+                : $"Mentési limit: legfeljebb {saveLimit:N0} pár kategóriánként.");
+            Console.WriteLine("Minden elmentett reprezentánshoz két fájl készül: *_red.txt és *_blue.txt.");
+            Console.WriteLine();
+        }
 
         var stats = new CounterexampleSupportStats(vertexCount, supportSize);
         var shown = 0;
@@ -80,6 +105,11 @@ internal static class CounterexampleEnumeration
         Action<long, byte[]> callback = (index, assignment) =>
         {
             var classification = stats.Add(assignment);
+            exporter?.SaveIfSelected(
+                index,
+                assignment,
+                saveNonBlock && !classification.IsIntervalBlock,
+                saveNoIntervalSupport && !classification.HasIntervalSupportWitness);
             if (index <= showFirst)
             {
                 shown++;
@@ -119,6 +149,19 @@ internal static class CounterexampleEnumeration
         Console.WriteLine($"Idő:                                            {result.Elapsed}");
 
         stats.PrintSummary(colorSwapFactor, result.RepresentativesFound, limitReached: result.LimitReached);
+        if (exporter is not null)
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Automatikusan mentett ellenpéldák ===");
+            Console.WriteLine($"Nem pontos intervallum-blokk: {exporter.SavedNonBlockCount:N0} pár ({exporter.SavedNonBlockCount * 2:N0} fájl)");
+            Console.WriteLine($"Nincs intervallumos support-witness: {exporter.SavedNoIntervalSupportCount:N0} pár ({exporter.SavedNoIntervalSupportCount * 2:N0} fájl)");
+            if (exporter.SkippedNonBlockCount > 0)
+                Console.WriteLine($"Mentési limit miatt kihagyott nem-blokkos jelöltek: {exporter.SkippedNonBlockCount:N0}");
+            if (exporter.SkippedNoIntervalSupportCount > 0)
+                Console.WriteLine($"Mentési limit miatt kihagyott intervallum-support nélküli jelöltek: {exporter.SkippedNoIntervalSupportCount:N0}");
+            Console.WriteLine($"Mappa: {exporter.OutputDirectory}");
+            Console.WriteLine("A fájlok minden csúcsot felsorolnak; izolált csúcsnál a sor például '7:'.");
+        }
 
         if (result.LimitReached)
         {

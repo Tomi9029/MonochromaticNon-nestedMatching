@@ -1,19 +1,28 @@
 ## Futtatás
 
+minden nem blokkos mentése fájlba:
+
+```powershell
+dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --save-no-interval-support --save-limit 10
+```
+
+utak:
+
+```powershell
+dotnet run -- --path-extremal -n 13 --force
+```
+
+
 Normál keresés:
 
 ```powershell
 dotnet run -- -n 3
-dotnet run -- -n 4
-dotnet run -- -n 5
 ```
 
 Független keresztellenőrzés:
 
 ```powershell
 dotnet run -- --verify -n 3
-dotnet run -- --verify -n 4
-dotnet run -- --verify -n 5
 ```
 
 Az összes jelenlegi kulcseset:

@@ -1,2 +1,0 @@
-OrderedMatching Research Edition v22
-Based on v21; adds support-set classification and allocation-free counterexample callback enumeration.

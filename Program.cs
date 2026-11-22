@@ -22,6 +22,14 @@ internal static class Program
 
         if (options.Help) { Options.PrintHelp(); return; }
 
+        if (!options.CountCounterexamples &&
+            (options.SaveNonBlockCounterexamples || options.SaveNoIntervalSupportCounterexamples || options.CounterexampleSaveDirectory is not null || options.CounterexampleSaveLimitSpecified))
+        {
+            Console.Error.WriteLine("A --save-non-block, --save-no-interval-support, --save-limit és --save-dir kapcsolók csak --count-counterexamples módban használhatók.");
+            Environment.ExitCode = 2;
+            return;
+        }
+
         if (options.SelfTest)
         {
             Environment.ExitCode = SelfTest.Run(options.RunSatTests, options.RequireNauty);
@@ -87,8 +95,26 @@ internal static class Program
                 Environment.ExitCode = 2;
                 return;
             }
+            if ((options.CounterexampleSaveDirectory is not null || options.CounterexampleSaveLimitSpecified) &&
+                !options.SaveNonBlockCounterexamples && !options.SaveNoIntervalSupportCounterexamples)
+            {
+                Console.Error.WriteLine("A --save-dir és --save-limit csak a --save-non-block vagy --save-no-interval-support kapcsolóval együtt használható.");
+                Environment.ExitCode = 2;
+                return;
+            }
+
             Environment.ExitCode = CounterexampleEnumeration.Run(
-                m, options.N, options.CounterexampleLimit, options.ShowFirstCounterexamples, options.ShowFirstNonBlockCounterexamples, options.ShowFirstNoIntervalSupport, options.Force);
+                m,
+                options.N,
+                options.CounterexampleLimit,
+                options.ShowFirstCounterexamples,
+                options.ShowFirstNonBlockCounterexamples,
+                options.ShowFirstNoIntervalSupport,
+                options.Force,
+                options.SaveNonBlockCounterexamples,
+                options.SaveNoIntervalSupportCounterexamples,
+                options.CounterexampleSaveDirectory,
+                options.CounterexampleSaveLimit);
             return;
         }
 
@@ -249,6 +275,11 @@ internal sealed class Options
     public int ShowFirstCounterexamples { get; private set; }
     public int ShowFirstNonBlockCounterexamples { get; private set; }
     public int ShowFirstNoIntervalSupport { get; private set; }
+    public bool SaveNonBlockCounterexamples { get; private set; }
+    public bool SaveNoIntervalSupportCounterexamples { get; private set; }
+    public string? CounterexampleSaveDirectory { get; private set; }
+    public long CounterexampleSaveLimit { get; private set; }
+    public bool CounterexampleSaveLimitSpecified { get; private set; }
     public bool PathExtremal { get; private set; }
     public string? OutputFile { get; private set; }
 
@@ -317,6 +348,23 @@ internal sealed class Options
                     if (showFirstNoIntervalSupport < 0) throw new ArgumentException("A --show-first-no-interval-support nem lehet negatív.");
                     o.ShowFirstNoIntervalSupport = showFirstNoIntervalSupport;
                     break;
+                case "--save-non-block":
+                    o.SaveNonBlockCounterexamples = true;
+                    break;
+                case "--save-no-interval-support":
+                    o.SaveNoIntervalSupportCounterexamples = true;
+                    break;
+                case "--save-dir":
+                    if (i + 1 >= args.Length) throw new ArgumentException("A --save-dir után könyvtárnév kell.");
+                    o.CounterexampleSaveDirectory = args[++i];
+                    break;
+                case "--save-limit":
+                    if (i + 1 >= args.Length || !long.TryParse(args[++i], out var saveLimit))
+                        throw new ArgumentException("A --save-limit után nemnegatív egész szám kell.");
+                    if (saveLimit < 0) throw new ArgumentException("A --save-limit nem lehet negatív.");
+                    o.CounterexampleSaveLimit = saveLimit;
+                    o.CounterexampleSaveLimitSpecified = true;
+                    break;
                 case "--path-extremal": o.PathExtremal = true; break;
                 case "-o":
                 case "--output":
@@ -347,11 +395,17 @@ internal sealed class Options
         Console.WriteLine("  dotnet run -- --count-counterexamples -n 6 -m 16 --limit-counterexamples 0");
         Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --show-first-non-block 5");
         Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --show-first-no-interval-support 5");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --save-non-block");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --limit-counterexamples 0 --save-no-interval-support");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --save-non-block --save-limit 100");
+        Console.WriteLine("  dotnet run -- --count-counterexamples -n 3 -m 7 --save-non-block --save-dir saved_examples");
         Console.WriteLine("  dotnet run -- --path-extremal -n 6");
         Console.WriteLine("  dotnet run -- --path-extremal -n 8 --show-coloring");
         Console.WriteLine("  dotnet run -- --path-extremal -n 11");
         Console.WriteLine("  dotnet run -- --path-extremal -n 12 --force");
         Console.WriteLine("  dotnet run -- --path-extremal -n 13 --force");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 18 --force");
+        Console.WriteLine("  dotnet run -- --path-extremal -n 20 --force");
         Console.WriteLine();
         Console.WriteLine("Kapcsolók:");
         Console.WriteLine("  --n, -n N           a matching mérete (n él)");
@@ -366,11 +420,15 @@ internal sealed class Options
         Console.WriteLine("  --show-first N      az első N ellenpélda-reprezentáns kiírása");
         Console.WriteLine("  --show-first-non-block N  az első N ellenpélda, amely nem pontos intervallumos K_k/komplement blokk");
         Console.WriteLine("  --show-first-no-interval-support N  az első N ellenpélda, ahol egyik szín supportja sem fér intervallumba");
+        Console.WriteLine("  --save-non-block    minden nem pontos intervallumos K_k/komplement ellenpéldát két szomszédsági listás fájlba ment");
+        Console.WriteLine("  --save-no-interval-support  azokat menti, ahol egyik szín supportja sem fér k egymást követő csúcsba");
+        Console.WriteLine("  --save-limit N      legfeljebb N színezéspár mentése kategóriánként; 0 = korlátlan (alap: 0)");
+        Console.WriteLine("  --save-dir DIR      mentési gyökérkönyvtár; alapértelmezés: ./counterexample_exports");
         Console.WriteLine("  A számláló külön kezeli: support-befoglalás, tetszőleges k-halmazos K_k/komplement,");
         Console.WriteLine("  valamint az egymást követő k csúcsból álló blokkot (a feltöltött rajz mintáját).");
         Console.WriteLine("  --path-extremal     leghosszabb monochromatikus non-nested utak globális minimuma; itt -n=csúcsszám");
-        Console.WriteLine("                      K2..K7: teljes színezés-enumeráció; K8..K11: SAT; K12..K13: SAT + --force;");
-        Console.WriteLine("                      K13 fölött a jelenlegi explicit útgenerátor nem támogatott.");
+        Console.WriteLine("                      K2..K7: teljes színezés-enumeráció; K8..K13: explicit SAT;");
+        Console.WriteLine("                      K12..K13: --force; K14..K20: lazy SAT + --force; K20 a felső határ.");
         Console.WriteLine("  --nauty             SAT megoldás kanonikusítása nauty-val");
         Console.WriteLine("  --verify            DPLL eredmény független solverrel is ellenőrizve");
         Console.WriteLine("  --verify-all        n=2..5 teljes független keresztellenőrzés m=3n-1 mellett");
@@ -380,6 +438,8 @@ internal sealed class Options
         Console.WriteLine("  --force             nagyobb keresési tér engedélyezése a biztonsági korlát fölött");
         Console.WriteLine("  --help, -h          segítség");
         Console.WriteLine();
+        Console.WriteLine("Mentésnél minden ellenpélda két fájlt kap (_red.txt és _blue.txt), soronként 'csúcs: szomszédok' formában.");
+        Console.WriteLine("A mentési könyvtár n, m és időbélyeg alapján automatikus alkönyvtárba kerül.");
         Console.WriteLine("Megjegyzés: --case egy matchinget választ ki, nem a teljes gráf egy teljes színezését.");
         Console.WriteLine("Megjegyzés: --path-extremal módban -n a rendezett teljes gráf csúcsszáma.");
     }

@@ -35,7 +35,7 @@ internal static class NonNestedPathGenerator
                 if (vertices[0] >= vertices[edgeLength]) return;
                 // The path sequence is needed only while generating the path.
                 // The SAT/exhaustive consumers need its edge set only, so keep
-                // just the edge ids to reduce memory for K_12 and K_13.
+                // just the edge ids to keep the path representation compact at larger graph sizes.
                 var edgeCopy = (int[])edgeIds.Clone();
                 result.Add(new NonNestedPath(edgeCopy));
                 return;
@@ -92,6 +92,14 @@ internal sealed record PathExhaustiveResult(
     bool[] WorstColoring,
     TimeSpan Elapsed);
 
+internal sealed record PathAvoidanceResult(
+    bool HasAvoidingColoring,
+    bool[]? Coloring,
+    long LearnedPathCount,
+    long SolverIterations,
+    long DecisionNodes,
+    TimeSpan Elapsed);
+
 internal static class PathExtremalSearch
 {
     // Literal enumeration is intentionally capped at seven vertices (2^21 colorings).
@@ -107,29 +115,36 @@ internal static class PathExtremalSearch
         if (vertexCount <= 7)
             return RunExhaustive(vertexCount, showColoring, outputFile);
 
-        // The current explicit path-family + DPLL implementation is sized for
-        // K_8..K_13. K_12 and K_13 can create hundreds of thousands of path
-        // constraints, so require an explicit opt-in before allocating them.
+        // Preserve the pre-v26 explicit SAT method through K_13. For larger
+        // graphs, use lazy cut generation so the complete path family is never
+        // materialized. K_20 is the experimental ceiling for this release.
         const int defaultSatMaximum = 11;
-        const int forceSatMaximum = 13;
+        const int forceSatMaximum = 20;
         if (vertexCount > forceSatMaximum)
         {
-            Console.Error.WriteLine($"A path mód jelenlegi explicit útgenerátora legfeljebb K_{forceSatMaximum}-ig támogatott.");
-            Console.Error.WriteLine("Nagyobb gráfhoz már streaming útgenerálás / más SAT backend szükséges.");
+            Console.Error.WriteLine($"A path mód jelenlegi lazy SAT-keresése legfeljebb K_{forceSatMaximum}-ig támogatott.");
+            Console.Error.WriteLine("A K_21+ méretekhez további optimalizálás szükséges.");
             return 2;
         }
         if (vertexCount > defaultSatMaximum && !force)
         {
-            Console.Error.WriteLine($"K_{vertexCount} esetén az útcsalád és a SAT-formula nagy memóriát igényelhet.");
+            Console.Error.WriteLine($"K_{vertexCount} esetén a lazy SAT-keresés jelentős CPU-időt igényelhet.");
             Console.Error.WriteLine($"A K_{vertexCount} futtatásához add meg a --force kapcsolót (jelenlegi felső határ: K_{forceSatMaximum}).");
             return 2;
         }
-        if (vertexCount > 11)
+        if (vertexCount <= 13)
         {
-            Console.WriteLine("FIGYELEM: nagy útcsalád készül; a memóriaigény és a SAT-keresési idő jelentős lehet.");
-            Console.WriteLine("A futás pontos eredményt ad, ha befejeződik; időkorlátot nem alkalmaz.");
-            Console.WriteLine();
+            Console.WriteLine("Módszer: explicit SAT-formula a teljes non-nested útcsaládból.");
+            if (vertexCount > 11)
+                Console.WriteLine("FIGYELEM: K_12 és K_13 esetén a teljes útcsalád memóriát és időt igényel; ez a korábbi implementációs útvonal.");
         }
+        else
+        {
+            Console.WriteLine("FIGYELEM: a teljes útcsaládot nem tároljuk el.");
+            Console.WriteLine("A SAT-solver csak a talált egyszínű non-nested utakból tanul új korlátozásokat.");
+            Console.WriteLine($"A lazy keresés pontos, de K_14..K_{forceSatMaximum} esetén hosszú ideig tarthat.");
+        }
+        Console.WriteLine();
         return RunSatMinMax(vertexCount, showColoring, outputFile);
     }
 
@@ -249,9 +264,17 @@ internal static class PathExtremalSearch
         Console.WriteLine("=== Non-nested monochromatic path extremal search ===");
         Console.WriteLine($"Rendezett teljes gráf: K_{m}");
         Console.WriteLine($"Élek: {edgeCount}; címkézett kétszínezések: {totalColorings:N0}");
-        Console.WriteLine("Módszer: SAT-alapú univerzális ellenőrzés.");
-        Console.WriteLine("Egy k élű út minden színezési feltételét úgy kódoljuk, hogy az út ne lehessen egyszínű.");
-        Console.WriteLine("UNSAT esetén minden színezés tartalmaz egyszínű, non-nested k-utat.");
+        if (m <= 13)
+        {
+            Console.WriteLine("Módszer: explicit SAT + a teljes non-nested útcsalád előzetes generálása.");
+        }
+        else
+        {
+            Console.WriteLine("Módszer: lazy SAT + ellenpélda-út alapú vágás (cut generation).");
+            Console.WriteLine("A teljes non-nested útcsaládot nem generáljuk előre.");
+            Console.WriteLine("Minden SAT-jelöltben megkeressük az egyszínű non-nested k-utat; csak a talált utak tiltó feltételeit adjuk a CNF-hez.");
+            Console.WriteLine("Ha a tanult részformula UNSAT, akkor a teljes útformula is UNSAT.");
+        }
         Console.WriteLine();
 
         bool[]? lastAvoidingColoring = null;
@@ -259,45 +282,38 @@ internal static class PathExtremalSearch
 
         for (var k = m - 1; k >= 1; k--)
         {
-            Console.WriteLine($"k={k}: a non-nested utak generálása...");
-            var buildSw = Stopwatch.StartNew();
-            var paths = NonNestedPathGenerator.Generate(m, k);
-            var edgeSets = new int[paths.Count][];
-            for (var i = 0; i < paths.Count; i++)
-                edgeSets[i] = paths[i].EdgeIds;
-            var pathCount = paths.Count;
-            var instance = CnfInstance.BuildFromForbiddenEdgeSets(m, k, edgeSets);
-            // The CNF now owns a compact flat literal array. Release the
-            // generated path objects before constructing the DPLL watch lists.
-            Array.Clear(edgeSets);
-            paths.Clear();
-            GC.Collect();
-            buildSw.Stop();
+            var useLazyCuts = m > 13;
+            Console.WriteLine(useLazyCuts
+                ? $"k={k}: lazy SAT-keresés indul..."
+                : $"k={k}: explicit SAT-keresés indul...");
+            var result = useLazyCuts
+                ? SolveAvoidingPathsLazy(m, k, showProgress: true)
+                : SolveAvoidingPathsExplicit(m, k);
+            Console.WriteLine($"k={k}: {(useLazyCuts ? "tanult utak" : "generált utak")}={result.LearnedPathCount:N0}, " +
+                              $"SAT-iterációk={result.SolverIterations:N0}, " +
+                              $"avoid-coloring={(result.HasAvoidingColoring ? "SAT" : "UNSAT")}, " +
+                              $"összes döntés={result.DecisionNodes:N0}, idő={result.Elapsed}");
 
-            var solveSw = Stopwatch.StartNew();
-            var solver = new DpllSolver(instance);
-            var fixedOk = edgeCount == 0 || solver.FixVariable(0, true);
-            var hasAvoidingColoring = fixedOk && solver.Solve();
-            solveSw.Stop();
-            Console.WriteLine($"k={k}: utak={pathCount:N0}, klauzulák={instance.ClauseCount:N0}, " +
-                              $"avoid-coloring={(hasAvoidingColoring ? "SAT" : "UNSAT")}, " +
-                              $"decisions={solver.DecisionNodes:N0}, build={buildSw.Elapsed}, solve={solveSw.Elapsed}");
-
-            if (hasAvoidingColoring)
+            if (result.HasAvoidingColoring)
             {
-                lastAvoidingColoring = solver.GetAssignment();
+                lastAvoidingColoring = result.Coloring
+                    ?? throw new InvalidOperationException("A SAT-eredményhez hiányzik a színezési tanú.");
                 continue;
             }
 
             var worstColoring = lastAvoidingColoring ?? Enumerable.Repeat(true, edgeCount).ToArray();
-            var witness = FindLongestPath(m, worstColoring);
-            if (witness.EdgeLength != k)
-                return Fail($"A SAT-tanú közvetlen útellenőrzése {witness.EdgeLength} élt adott, de az elvárt érték {k}.");
+            var longerWitness = FindNonNestedPathOfLength(m, worstColoring, k + 1);
+            if (longerWitness is not null)
+                return Fail($"A korábbi SAT-színezésben {k + 1} hosszú non-nested út is található; az eredmény nem konzisztens.");
+
+            var witness = FindNonNestedPathOfLength(m, worstColoring, k);
+            if (witness is null)
+                return Fail($"A közvetlen ellenőrző nem talált {k} hosszú utat az UNSAT által implikált színezésben.");
 
             totalSw.Stop();
             Console.WriteLine();
             Console.WriteLine($"Legrosszabb eset: L_min={k} él ({k + 1} csúcs)");
-            Console.WriteLine("Érvelés: a k-path elkerülő formula UNSAT, a k+1-path elkerülő formula SAT.");
+            Console.WriteLine("Érvelés: a k-utas elkerülő formula UNSAT, a k+1-utas elkerülő formula SAT.");
             PrintWitness(witness);
             Console.WriteLine($"Teljes idő: {totalSw.Elapsed}");
             Console.WriteLine("SAT MIN-MAX VERIFICATION: PASS");
@@ -306,6 +322,253 @@ internal static class PathExtremalSearch
         }
 
         return Fail("Váratlan: még a k=1 út elkerülő formulája is SAT lett.");
+    }
+
+    /// <summary>
+    /// Preserves the original explicit path-CNF route for K_8..K_13. This
+    /// avoids changing behavior for sizes which were already supported before
+    /// the lazy large-instance extension.
+    /// </summary>
+    private static PathAvoidanceResult SolveAvoidingPathsExplicit(int m, int targetPathLength)
+    {
+        if (m < 2 || targetPathLength < 1 || targetPathLength >= m)
+            throw new ArgumentOutOfRangeException(nameof(targetPathLength));
+
+        var sw = Stopwatch.StartNew();
+        var instance = BuildExplicitPathAvoidanceInstance(m, targetPathLength);
+        var solver = new DpllSolver(instance);
+        var fixedOk = solver.FixVariable(0, true); // color-swap symmetry
+        var hasAvoidingColoring = fixedOk && solver.Solve();
+        var coloring = hasAvoidingColoring ? solver.GetAssignment() : null;
+        sw.Stop();
+
+        return new PathAvoidanceResult(
+            HasAvoidingColoring: hasAvoidingColoring,
+            Coloring: coloring,
+            LearnedPathCount: instance.MatchingsGenerated,
+            SolverIterations: 1,
+            DecisionNodes: solver.DecisionNodes,
+            Elapsed: sw.Elapsed);
+    }
+
+    private static CnfInstance BuildExplicitPathAvoidanceInstance(int m, int targetPathLength)
+    {
+        var paths = NonNestedPathGenerator.Generate(m, targetPathLength);
+        var forbiddenSets = new int[paths.Count][];
+        for (var i = 0; i < paths.Count; i++)
+            forbiddenSets[i] = paths[i].EdgeIds;
+
+        return CnfInstance.BuildFromForbiddenEdgeSets(m, targetPathLength, forbiddenSets);
+    }
+
+    /// <summary>
+    /// Lazily solves the coloring problem that avoids every monochromatic
+    /// non-nested path with exactly targetPathLength edges. Each SAT candidate
+    /// is checked directly; a violating path contributes a valid pair of CNF
+    /// clauses. UNSAT of this subset of valid constraints proves UNSAT of the
+    /// full path family, without ever enumerating that family.
+    /// </summary>
+    internal static PathAvoidanceResult SolveAvoidingPathsLazy(int m, int targetPathLength, bool showProgress = false)
+    {
+        if (m < 2 || targetPathLength < 1 || targetPathLength >= m)
+            throw new ArgumentOutOfRangeException(nameof(targetPathLength));
+
+        var edgeCount = checked(m * (m - 1) / 2);
+        var solver = new IncrementalDpllSolver(edgeCount);
+        long learnedPathCount = 0;
+        long decisions = 0;
+        long iterations = 0;
+        var totalSw = Stopwatch.StartNew();
+
+        while (true)
+        {
+            iterations++;
+            solver.ResetForNextSolve();
+            var fixedOk = solver.FixVariable(0, true); // color-swap symmetry
+            var hasCandidate = fixedOk && solver.Solve();
+            decisions += solver.DecisionNodes;
+
+            if (!hasCandidate)
+            {
+                totalSw.Stop();
+                return new PathAvoidanceResult(
+                    HasAvoidingColoring: false,
+                    Coloring: null,
+                    LearnedPathCount: learnedPathCount,
+                    SolverIterations: iterations,
+                    DecisionNodes: decisions,
+                    Elapsed: totalSw.Elapsed);
+            }
+
+            var coloring = solver.GetAssignment();
+            const int cutBatchSize = 128;
+            var violatingPaths = FindNonNestedPathsOfLength(m, coloring, targetPathLength, cutBatchSize);
+            if (violatingPaths.Count == 0)
+            {
+                totalSw.Stop();
+                return new PathAvoidanceResult(
+                    HasAvoidingColoring: true,
+                    Coloring: coloring,
+                    LearnedPathCount: learnedPathCount,
+                    SolverIterations: iterations,
+                    DecisionNodes: decisions,
+                    Elapsed: totalSw.Elapsed);
+            }
+
+            solver.ResetForNextSolve();
+            // The candidate satisfies every clause already learned. Therefore
+            // none of its monochromatic violating paths can have been learned
+            // in an earlier round. The path finder removes reverse duplicates
+            // inside this batch, so no ever-growing global string set is needed.
+            var newlyLearned = violatingPaths.Count;
+            foreach (var edgeIds in violatingPaths)
+            {
+                solver.AddForbiddenPath(edgeIds);
+                learnedPathCount++;
+            }
+
+            if (showProgress && (iterations == 1 || iterations % 25 == 0))
+            {
+                Console.WriteLine($"      lazy progress: iteráció={iterations:N0}, új utak={newlyLearned:N0}, tanult utak={learnedPathCount:N0}, döntések={decisions:N0}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Collects at most maxPaths distinct monochromatic non-nested paths from a
+    /// candidate coloring. Bounded batches keep the lazy SAT loop from learning
+    /// only one cut per full solver restart.
+    /// </summary>
+    private static List<int[]> FindNonNestedPathsOfLength(int m, bool[] red, int targetLength, int maxPaths)
+    {
+        var result = new List<int[]>(maxPaths);
+        if (targetLength < 1 || targetLength >= m || maxPaths < 1)
+            return result;
+
+        var visited = new bool[m];
+        var pathVertices = new int[targetLength + 1];
+        var pathEdges = new int[targetLength];
+        var localKeys = new HashSet<string>(StringComparer.Ordinal);
+        var wantRed = false;
+
+        for (var color = 0; color < 2 && result.Count < maxPaths; color++)
+        {
+            wantRed = color == 1;
+            for (var start = 0; start < m && result.Count < maxPaths; start++)
+            {
+                Array.Clear(visited);
+                visited[start] = true;
+                pathVertices[0] = start;
+                Dfs(0, start);
+            }
+        }
+        return result;
+
+        void Dfs(int depth, int last)
+        {
+            if (result.Count >= maxPaths)
+                return;
+            if (depth == targetLength)
+            {
+                // A path and its reverse are identical; keep one orientation.
+                if (pathVertices[0] >= pathVertices[targetLength])
+                    return;
+                var canonicalEdges = (int[])pathEdges.Clone();
+                Array.Sort(canonicalEdges);
+                var key = string.Join(",", canonicalEdges);
+                if (localKeys.Add(key))
+                    result.Add(canonicalEdges);
+                return;
+            }
+
+            for (var next = 0; next < m && result.Count < maxPaths; next++)
+            {
+                if (visited[next]) continue;
+                var edgeId = NonNestedPathGenerator.EdgeId(m, last, next);
+                if (red[edgeId] != wantRed) continue;
+
+                var newEdge = (U: Math.Min(last, next), V: Math.Max(last, next));
+                var valid = true;
+                for (var i = 0; i < depth; i++)
+                {
+                    var old = (U: Math.Min(pathVertices[i], pathVertices[i + 1]),
+                               V: Math.Max(pathVertices[i], pathVertices[i + 1]));
+                    if (NestedRelations.IsNested(newEdge, old))
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (!valid) continue;
+
+                pathEdges[depth] = edgeId;
+                pathVertices[depth + 1] = next;
+                visited[next] = true;
+                Dfs(depth + 1, next);
+                visited[next] = false;
+            }
+        }
+    }
+
+    /// <summary>Finds one monochromatic non-nested path of exactly the requested length, stopping as soon as one is found.</summary>
+    internal static MonochromaticPathWitness? FindNonNestedPathOfLength(int m, bool[] red, int targetLength)
+    {
+        if (red.Length != m * (m - 1) / 2)
+            throw new ArgumentException("Hibás élszínezés-hossz.", nameof(red));
+        if (targetLength < 1 || targetLength >= m)
+            return null;
+
+        var visited = new bool[m];
+        var pathVertices = new int[targetLength + 1];
+        var wantRed = false;
+
+        for (var color = 0; color < 2; color++)
+        {
+            wantRed = color == 1;
+            for (var start = 0; start < m; start++)
+            {
+                Array.Clear(visited);
+                visited[start] = true;
+                pathVertices[0] = start;
+                if (Dfs(0, start))
+                    return new MonochromaticPathWitness(wantRed, (int[])pathVertices.Clone());
+            }
+        }
+        return null;
+
+        bool Dfs(int depth, int last)
+        {
+            if (depth == targetLength)
+                return true;
+
+            for (var next = 0; next < m; next++)
+            {
+                if (visited[next]) continue;
+                var edgeId = NonNestedPathGenerator.EdgeId(m, last, next);
+                if (red[edgeId] != wantRed) continue;
+
+                var newEdge = (U: Math.Min(last, next), V: Math.Max(last, next));
+                var valid = true;
+                for (var i = 0; i < depth; i++)
+                {
+                    var old = (U: Math.Min(pathVertices[i], pathVertices[i + 1]),
+                               V: Math.Max(pathVertices[i], pathVertices[i + 1]));
+                    if (NestedRelations.IsNested(newEdge, old))
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (!valid) continue;
+
+                visited[next] = true;
+                pathVertices[depth + 1] = next;
+                if (Dfs(depth + 1, next))
+                    return true;
+                visited[next] = false;
+            }
+            return false;
+        }
     }
 
     public static MonochromaticPathWitness FindLongestPath(int m, bool[] red)

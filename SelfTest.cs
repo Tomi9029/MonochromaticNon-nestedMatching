@@ -34,9 +34,12 @@ internal static class SelfTest
         Check("Non-nested path family counts K2..K11", TestNonNestedPathCounts);
         Check("Path extremal exhaustive values K2..K7", TestPathExtremalValues);
         Check("Path CNF min-max regression K4", TestPathSatMinMaxK4);
+        Check("Path lazy cut-generation regression K4", TestPathLazySatMinMaxK4);
         Check("Counterexample enumeration count K4, M2", TestCounterexampleEnumerationK4);
         Check("Counterexample enumeration count K7, M3", TestCounterexampleEnumerationK7);
         Check("Counterexample support classification K7, M3", TestCounterexampleSupportStatsK7);
+        Check("Counterexample adjacency-list export", TestCounterexampleAdjacencyExport);
+        Check("Counterexample export save limit", TestCounterexampleExportLimit);
         Check("Independent lower-bound coloring n=2, m=4", TestIndependentLowerBoundN2);
         Check("Independent lower-bound coloring n=3, m=7", TestIndependentLowerBoundN3);
         Check("Compact lower-bound coloring n=6, m=16", TestCompactLowerBoundN6M16);
@@ -128,6 +131,62 @@ internal static class SelfTest
         {
             var model = IndependentMatchingModel.Build(3 * n - 1, n, true);
             Expect(model.Matchings.Count, count);
+        }
+    }
+
+
+    private static void TestCounterexampleAdjacencyExport()
+    {
+        // Edge order: (1,2),(1,3),(1,4),(2,3),(2,4),(3,4).
+        // 2 = red, 1 = blue.
+        byte[] colors = { 2, 1, 2, 1, 1, 2 };
+        var red = CounterexampleAdjacencyExporter.FormatAdjacencyListForTest(4, colors, 2);
+        var blue = CounterexampleAdjacencyExporter.FormatAdjacencyListForTest(4, colors, 1);
+
+        Expect(red, "1: 2 4\n2: 1\n3: 4\n4: 1 3\n");
+        Expect(blue, "1: 3\n2: 3 4\n3: 1 2\n4: 2\n");
+
+        var tempRoot = Path.Combine(Path.GetTempPath(), "OrderedMatchingExportTest_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var exporter = new CounterexampleAdjacencyExporter(4, 2, tempRoot);
+            exporter.SaveIfSelected(representativeIndex: 7, colors, isNonBlock: true, hasNoIntervalSupport: false);
+            Expect(exporter.SavedNonBlockCount, 1L);
+            Expect(exporter.SavedNoIntervalSupportCount, 0L);
+
+            var files = Directory.GetFiles(exporter.OutputDirectory)
+                .OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal)
+                .ToArray();
+            Expect(files.Length, 2);
+            var redFile = files.Single(path => path.EndsWith("_red.txt", StringComparison.Ordinal));
+            var blueFile = files.Single(path => path.EndsWith("_blue.txt", StringComparison.Ordinal));
+            Expect(File.ReadAllText(redFile).Replace("\r\n", "\n", StringComparison.Ordinal), red);
+            Expect(File.ReadAllText(blueFile).Replace("\r\n", "\n", StringComparison.Ordinal), blue);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    private static void TestCounterexampleExportLimit()
+    {
+        byte[] colors = { 2, 1, 2, 1, 1, 2 };
+        var tempRoot = Path.Combine(Path.GetTempPath(), "OrderedMatchingExportLimitTest_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var exporter = new CounterexampleAdjacencyExporter(4, 2, tempRoot, maxPairsPerCategory: 1);
+            exporter.SaveIfSelected(representativeIndex: 1, colors, isNonBlock: true, hasNoIntervalSupport: false);
+            exporter.SaveIfSelected(representativeIndex: 2, colors, isNonBlock: true, hasNoIntervalSupport: false);
+            exporter.SaveIfSelected(representativeIndex: 3, colors, isNonBlock: true, hasNoIntervalSupport: false);
+
+            Expect(exporter.SavedNonBlockCount, 1L);
+            Expect(exporter.SkippedNonBlockCount, 2L);
+            Expect(Directory.GetFiles(exporter.OutputDirectory).Length, 2);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, recursive: true);
         }
     }
 
@@ -405,6 +464,18 @@ internal static class SelfTest
         var solver2 = new DpllSolver(instance2);
         Expect(solver2.FixVariable(0, true), true);
         Expect(solver2.Solve(), false);
+    }
+
+    private static void TestPathLazySatMinMaxK4()
+    {
+        var avoiding3 = PathExtremalSearch.SolveAvoidingPathsLazy(4, 3);
+        Expect(avoiding3.HasAvoidingColoring, true);
+        if (avoiding3.Coloring is null)
+            throw new InvalidOperationException("A lazy SAT K4/k3 eredményhez hiányzik a színezési tanú.");
+        Expect(PathExtremalSearch.FindNonNestedPathOfLength(4, avoiding3.Coloring, 3) is null, true);
+
+        var avoiding2 = PathExtremalSearch.SolveAvoidingPathsLazy(4, 2);
+        Expect(avoiding2.HasAvoidingColoring, false);
     }
 
     private static void TestCounterexampleEnumerationK4()

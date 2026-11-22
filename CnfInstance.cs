@@ -79,7 +79,7 @@ internal sealed class CnfInstance
             edges.Add((u, v));
 
         // Allocate the final flat literal array once. This avoids List growth
-        // and transient duplicate buffers for the large K_12/K_13 path families.
+        // and transient duplicate buffers for large non-nested path families.
         var clauseData = new int[checked(forbiddenSets.Count * setSize * 2)];
         var offset = 0;
         for (var index = 0; index < forbiddenSets.Count; index++)
